@@ -14,9 +14,11 @@ frequency caused by a hardware design decision, not just "a CPU that works."
 - [x] ALU module written and testbench passing
       (32-bit RV32I ALU: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU;
       files: `alu.v`, `tb_alu.v`)
-- [ ] Register file (32 x 32-bit, 2 read ports + 1 write port, x0 hardwired
-      to zero) — **next task**
+- [x] Register file written and testbench passing
+      (32 x 32-bit, 2 read ports + 1 write port, x0 hardwired to zero;
+      files: `regfile.v`, `tb_regfile.v`)
 - [ ] Control unit (decodes instructions, drives ALU/regfile/mux selects)
+      — **next task**
 - [ ] Program counter + instruction memory + fetch logic
 - [ ] Data memory + load/store support
 - [ ] Single-cycle core integration (wire ALU + regfile + control + fetch +
@@ -115,7 +117,8 @@ with the ALU:
 
 ## Immediate next step
 
-Build the register file: 32 registers of 32 bits each, two read ports and
-one write port, with `x0` hardwired to always read as zero regardless of
-what is written to it. Write it and its testbench following the same
-pattern as `alu.v` / `tb_alu.v`.
+Build the control unit: decode RV32I instructions (opcode/funct3/funct7)
+into the ALU op select and the mux/enable signals the datapath needs
+(regfile write enable, immediate select, branch/jump control, memory
+read/write). Write it and its testbench following the same pattern as
+`alu.v` / `tb_alu.v` and `regfile.v` / `tb_regfile.v`.

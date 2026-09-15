@@ -1,0 +1,5 @@
+# Compiled Icarus Verilog simulation binaries
+sim_*
+
+# Waveform dumps
+*.vcd
