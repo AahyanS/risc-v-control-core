@@ -17,9 +17,11 @@ frequency caused by a hardware design decision, not just "a CPU that works."
 - [x] Register file written and testbench passing
       (32 x 32-bit, 2 read ports + 1 write port, x0 hardwired to zero;
       files: `regfile.v`, `tb_regfile.v`)
-- [ ] Control unit (decodes instructions, drives ALU/regfile/mux selects)
-      — **next task**
-- [ ] Program counter + instruction memory + fetch logic
+- [x] Control unit written and testbench passing
+      (decodes R-type/I-type opcode+funct3+funct7 into alu_ctrl, alu_src,
+      reg_write; branches/loads/stores/jumps not wired up yet;
+      files: `control.v`, `tb_control.v`)
+- [ ] Program counter + instruction memory + fetch logic — **next task**
 - [ ] Data memory + load/store support
 - [ ] Single-cycle core integration (wire ALU + regfile + control + fetch +
       memory together into a working single-cycle RV32I CPU)
@@ -117,8 +119,9 @@ with the ALU:
 
 ## Immediate next step
 
-Build the control unit: decode RV32I instructions (opcode/funct3/funct7)
-into the ALU op select and the mux/enable signals the datapath needs
-(regfile write enable, immediate select, branch/jump control, memory
-read/write). Write it and its testbench following the same pattern as
-`alu.v` / `tb_alu.v` and `regfile.v` / `tb_regfile.v`.
+Build the program counter + instruction memory + fetch logic: a PC
+register that increments by 4 each cycle (or jumps/branches once those
+are wired up), an instruction memory to fetch from, and the logic to
+slice a fetched 32-bit word into opcode/funct3/funct7/rd/rs1/rs2/imm
+fields for the control unit and register file. Write it and its
+testbench following the same pattern as the earlier modules.
