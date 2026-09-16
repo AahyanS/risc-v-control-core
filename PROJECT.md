@@ -29,10 +29,12 @@ frequency caused by a hardware design decision, not just "a CPU that works."
       (256 x 32-bit combinational ROM, addressed by pc's byte address;
       no toolchain yet, so programs are hand-loaded via hierarchical
       reference in testbenches; files: `imem.v`, `tb_imem.v`)
-- [ ] Data memory + load/store support
-- [ ] Single-cycle core integration (wire pc + imem + control + alu +
-      regfile together into a working single-cycle RV32I CPU) —
-      **next task**
+- [x] Single-cycle core integration (wire pc + imem + control + alu +
+      regfile together into a working single-cycle RV32I CPU)
+      (R-type/I-type ALU instructions only; verified end-to-end against
+      a hand-assembled 7-instruction test program; files: `cpu.v`,
+      `tb_cpu.v`)
+- [ ] Data memory + load/store support — **next task**
 - [ ] Pipelining: 5-stage pipeline (IF / ID / EX / MEM / WB)
 - [ ] Hazard detection + forwarding for the pipeline
 - [ ] Custom PID-MAC instruction (see below)
@@ -127,10 +129,9 @@ with the ALU:
 
 ## Immediate next step
 
-Wire pc + imem + control + alu + regfile together into a single-cycle
-core (`cpu.v`): slice the fetched instruction into opcode/funct3/
-funct7/rd/rs1/rs2/imm, feed the fields into control and regfile, mux
-the ALU's second operand between rs2 and the sign-extended immediate
-per control's alu_src, and drive pc_next = pc + 4. Limited to R-type/
-I-type ALU instructions for now, matching what control.v decodes;
-data memory and load/store support come after this integration.
+Add data memory + load/store support: a data memory module (dmem.v),
+extended control-unit decode for S-type (store) and I-type-load
+opcodes (mem_read/mem_write/mem_to_reg signals), the S-type immediate
+(split across two instruction fields, unlike I-type's contiguous
+immediate), and a write-back mux so regfile can be loaded from either
+the ALU result or a data memory read.
