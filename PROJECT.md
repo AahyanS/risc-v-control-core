@@ -21,7 +21,12 @@ frequency caused by a hardware design decision, not just "a CPU that works."
       (decodes R-type/I-type opcode+funct3+funct7 into alu_ctrl, alu_src,
       reg_write; branches/loads/stores/jumps not wired up yet;
       files: `control.v`, `tb_control.v`)
-- [ ] Program counter + instruction memory + fetch logic — **next task**
+- [x] Program counter written and testbench passing
+      (synchronous reset to 0, advances to whatever pc_next carries;
+      pc+4/branch-target arithmetic lives outside this module;
+      files: `pc.v`, `tb_pc.v`)
+- [ ] Instruction memory + fetch wiring (pc -> imem address -> instruction
+      word) — **next task**
 - [ ] Data memory + load/store support
 - [ ] Single-cycle core integration (wire ALU + regfile + control + fetch +
       memory together into a working single-cycle RV32I CPU)
