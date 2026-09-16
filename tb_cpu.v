@@ -60,6 +60,24 @@ module tb_cpu;
         uut.imem_inst.mem[5] = 32'h0020E333;
         uut.imem_inst.mem[6] = 32'hFFF00393;
 
+        // Load/store extension to the same program:
+        //   addi x1, x0, 100  -> x1 = 100 (base address)
+        //   addi x2, x0, 42   -> x2 = 42  (value to store)
+        //   sw   x2, 0(x1)    -> mem[100] = 42
+        //   lw   x3, 0(x1)    -> x3 = 42  (read back)
+        //   addi x4, x0, -5   -> x4 = 0xFFFFFFFB
+        //   sb   x4, 4(x1)    -> mem[104] = 0xFB (low byte of x4)
+        //   lb   x5, 4(x1)    -> x5 = 0xFFFFFFFB (sign-extended)
+        //   lbu  x6, 4(x1)    -> x6 = 0x000000FB (zero-extended)
+        uut.imem_inst.mem[7]  = 32'h06400093;
+        uut.imem_inst.mem[8]  = 32'h02A00113;
+        uut.imem_inst.mem[9]  = 32'h0020A023;
+        uut.imem_inst.mem[10] = 32'h0000A183;
+        uut.imem_inst.mem[11] = 32'hFFB00213;
+        uut.imem_inst.mem[12] = 32'h00408223;
+        uut.imem_inst.mem[13] = 32'h00408283;
+        uut.imem_inst.mem[14] = 32'h0040C303;
+
         // Hold reset through one clock edge to establish pc = 0, then
         // release it at a safe (falling-edge) point
         @(negedge clk);
@@ -90,10 +108,47 @@ module tb_cpu;
         @(posedge clk); @(negedge clk);
         check_reg(5'd7, 32'hFFFFFFFF, "ADDI_X7_NEG1");
 
-        // pc should now sit past all 7 instructions: 7 * 4 = 28
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd1, 32'd100, "ADDI_X1_BASE");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd2, 32'd42, "ADDI_X2_VAL");
+
+        @(posedge clk); @(negedge clk);
+        // SW doesn't write a register - check the memory word directly
         #1;
-        if (uut.pc_curr !== 32'd28)
-            $display("FAIL [PC_FINAL]: got=%0d expected=28", uut.pc_curr);
+        if (uut.dmem_inst.mem[100] !== 8'd42 || uut.dmem_inst.mem[101] !== 8'd0 ||
+            uut.dmem_inst.mem[102] !== 8'd0  || uut.dmem_inst.mem[103] !== 8'd0)
+            $display("FAIL [SW_STORED_WORD]: mem[100..103] got=%0h %0h %0h %0h",
+                      uut.dmem_inst.mem[100], uut.dmem_inst.mem[101],
+                      uut.dmem_inst.mem[102], uut.dmem_inst.mem[103]);
+        else
+            $display("PASS [SW_STORED_WORD]: mem[100..103] = 42,0,0,0");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd3, 32'd42, "LW_READBACK");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd4, 32'hFFFFFFFB, "ADDI_X4_NEG5");
+
+        @(posedge clk); @(negedge clk);
+        #1;
+        if (uut.dmem_inst.mem[104] !== 8'hFB)
+            $display("FAIL [SB_STORED_BYTE]: mem[104] got=%0h expected=fb",
+                      uut.dmem_inst.mem[104]);
+        else
+            $display("PASS [SB_STORED_BYTE]: mem[104] = fb");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd5, 32'hFFFFFFFB, "LB_SIGN_EXTEND");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd6, 32'h000000FB, "LBU_ZERO_EXTEND");
+
+        // pc should now sit past all 15 instructions: 15 * 4 = 60
+        #1;
+        if (uut.pc_curr !== 32'd60)
+            $display("FAIL [PC_FINAL]: got=%0d expected=60", uut.pc_curr);
         else
             $display("PASS [PC_FINAL]: pc=%0d", uut.pc_curr);
 

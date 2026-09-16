@@ -58,10 +58,14 @@ locking or scratchpad memory for exactly this reason).
 - [x] Single-cycle core integration (pc + imem + control + alu + regfile;
       R-type/I-type ALU instructions only; verified end-to-end against a
       hand-assembled test program; files: `cpu.v`, `tb_cpu.v`)
-- [ ] Data memory + load/store support (`dmem.v`, S-type immediate,
-      mem_read/mem_write/mem_to_reg, write-back mux) — **next task**
+- [x] Data memory + load/store support
+      (byte-addressable dmem with full LB/LH/LW/LBU/LHU/SB/SH/SW width +
+      sign/zero-extend support; S-type immediate; mem_write/mem_to_reg/
+      imm_sel control signals; write-back mux; verified end-to-end in
+      cpu.v against a hand-assembled test program; files: `dmem.v`,
+      `tb_dmem.v`, updated `control.v`/`cpu.v`/`tb_cpu.v`)
 - [ ] Branches (B-type) and jumps (JAL, JALR) — required before any real
-      program can run
+      program can run — **next task**
 - [ ] LUI / AUIPC — completes the RV32I instruction set
 - [ ] RISC-V GNU toolchain installed; compile real C/assembly instead of
       hand-assembled hex
@@ -282,9 +286,12 @@ Electrical cautions:
 
 ## Immediate next step
 
-Add data memory + load/store support: a data memory module (`dmem.v`),
-extended control-unit decode for S-type (store) and I-type-load opcodes
-(mem_read / mem_write / mem_to_reg signals), the S-type immediate (split
-across two instruction fields, unlike I-type's contiguous immediate), and
-a write-back mux so the register file can be loaded from either the ALU
-result or a data memory read.
+Add branches (B-type: BEQ/BNE/BLT/BGE/BLTU/BGEU) and jumps (JAL, JALR):
+the B-type immediate (split across four non-contiguous instruction
+fields, and scaled by 2 since branch targets are always halfword-
+aligned), a branch-taken/not-taken decision fed by the ALU's existing
+`zero` output plus a new comparison mode, a pc_next mux (sequential vs.
+branch/jump target) driven by control, and JAL/JALR's extra behavior of
+writing `pc + 4` back into rd (needed for function-call return addresses).
+This is also the point where a real assembled program with loops becomes
+possible for the first time.

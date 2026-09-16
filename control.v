@@ -3,8 +3,12 @@
 //
 // Decodes the opcode/funct3/funct7 fields of a fetched instruction and
 // drives the ALU operation select and datapath control signals.
-// Currently handles R-type and I-type ALU instructions only (no
-// branches/loads/stores/jumps yet - those need the PC and memory).
+// Currently handles R-type/I-type ALU instructions plus loads/stores
+// (no branches/jumps yet - those need PC-relative addressing wired up).
+//
+// funct3 is not needed here for loads/stores beyond what's already
+// covered by opcode - dmem.v consumes the raw funct3 directly for
+// width/signedness, since it's already the exact ISA encoding it needs.
 
 module control (
     input  [6:0] opcode,
@@ -12,12 +16,20 @@ module control (
     input  [6:0] funct7,
     output reg [3:0] alu_ctrl,
     output reg       alu_src,
-    output reg       reg_write
+    output reg       reg_write,
+    output reg       mem_write,
+    output reg       mem_to_reg,
+    output reg       imm_sel
 );
 
-    // R-type and I-type opcodes (ALU-op instructions only, for now)
+    // Opcodes handled so far
     localparam OPCODE_R_TYPE = 7'b0110011;
     localparam OPCODE_I_TYPE = 7'b0010011;
+    localparam OPCODE_LOAD   = 7'b0000011;
+    localparam OPCODE_STORE  = 7'b0100011;
+
+    // ALU op used for address calculation on every load/store: rs1 + imm
+    localparam ALU_ADD = 4'b0000;
 
     // funct7 value that marks the "alternate" op within a funct3 group
     // (SUB instead of ADD, SRA instead of SRL)
@@ -25,10 +37,13 @@ module control (
 
     always @(*) begin
         // Defaults: behave like a NOP for any opcode not yet handled
-        // (branches/loads/stores/jumps aren't wired up yet)
-        alu_ctrl  = 4'b0000;
-        alu_src   = 1'b0;
-        reg_write = 1'b0;
+        // (branches/jumps aren't wired up yet)
+        alu_ctrl   = 4'b0000;
+        alu_src    = 1'b0;
+        reg_write  = 1'b0;
+        mem_write  = 1'b0;
+        mem_to_reg = 1'b0;
+        imm_sel    = 1'b0; // 0 = I-type immediate (the only format used so far)
 
         case (opcode)
             OPCODE_R_TYPE: begin
@@ -61,6 +76,21 @@ module control (
                     3'b111:  alu_ctrl = 4'b0010; // ANDI
                     default: alu_ctrl = 4'b0000;
                 endcase
+            end
+
+            OPCODE_LOAD: begin
+                reg_write  = 1'b1;
+                alu_src    = 1'b1;    // ALU computes rs1 + imm (address)
+                alu_ctrl   = ALU_ADD;
+                mem_to_reg = 1'b1;    // write-back comes from dmem, not the ALU
+            end
+
+            OPCODE_STORE: begin
+                reg_write  = 1'b0;    // stores don't write a register
+                alu_src    = 1'b1;    // ALU computes rs1 + imm (address)
+                alu_ctrl   = ALU_ADD;
+                mem_write  = 1'b1;
+                imm_sel    = 1'b1; // S-type immediate, not I-type
             end
 
             default: ; // unrecognized opcode: keep the NOP-like defaults above

@@ -1,9 +1,10 @@
 // cpu.v
-// Single-cycle RV32I core (R-type/I-type ALU instructions only)
+// Single-cycle RV32I core (R-type/I-type ALU instructions, loads,
+// stores)
 //
-// Wires together pc + imem + control + regfile + alu into a working
-// (if limited) CPU. No branches/jumps/loads/stores yet - those need
-// data memory and branch-target logic that don't exist yet.
+// Wires together pc + imem + control + regfile + alu + dmem into a
+// working (if limited) CPU. No branches/jumps yet - those need
+// PC-relative branch-target logic that doesn't exist yet.
 
 module cpu (
     input clk,
@@ -43,11 +44,20 @@ module cpu (
     // I-type immediate (instr[31:20]), sign-extended to 32 bits
     wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
 
+    // S-type immediate: split across instr[31:25] (high bits) and
+    // instr[11:7] (low bits) - those positions are rs2/rd for R-type,
+    // so S-type reassembles its immediate around them. Same 20-bit
+    // sign extension as imm_i once reassembled.
+    wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+
     // ---- Control ----
 
     wire [3:0] alu_ctrl;
     wire       alu_src;
     wire       reg_write;
+    wire       mem_write;
+    wire       mem_to_reg;
+    wire       imm_sel;
 
     control control_inst (
         .opcode(opcode),
@@ -55,8 +65,15 @@ module cpu (
         .funct7(funct7),
         .alu_ctrl(alu_ctrl),
         .alu_src(alu_src),
-        .reg_write(reg_write)
+        .reg_write(reg_write),
+        .mem_write(mem_write),
+        .mem_to_reg(mem_to_reg),
+        .imm_sel(imm_sel)
     );
+
+    // Selects which immediate format to use, per control's decode.
+    // Only I-type and S-type exist so far.
+    wire [31:0] imm = imm_sel ? imm_s : imm_i;
 
     // ---- Register read / Execute / Register write-back ----
 
@@ -66,8 +83,9 @@ module cpu (
     wire [31:0] alu_result;
     wire        alu_zero;
 
-    // ALU's 2nd operand: rs2 for R-type, sign-extended imm for I-type
-    assign alu_b = alu_src ? imm_i : rs2_data;
+    // ALU's 2nd operand: rs2 for R-type, the selected immediate for
+    // I-type/load/store (load/store both use it as an address offset)
+    assign alu_b = alu_src ? imm : rs2_data;
 
     alu alu_inst (
         .a(rs1_data),
@@ -77,13 +95,30 @@ module cpu (
         .zero(alu_zero)
     );
 
+    // ---- Data memory ----
+
+    wire [31:0] dmem_read_data;
+
+    dmem dmem_inst (
+        .clk(clk),
+        .addr(alu_result),       // rs1 + imm, computed by the ALU above
+        .write_data(rs2_data),   // the value a store writes
+        .mem_write(mem_write),
+        .funct3(funct3),         // raw width/signedness encoding
+        .read_data(dmem_read_data)
+    );
+
+    // Write-back source: the ALU result normally, or a memory read for
+    // loads
+    wire [31:0] reg_write_data = mem_to_reg ? dmem_read_data : alu_result;
+
     regfile regfile_inst (
         .clk(clk),
         .we(reg_write),
         .rs1_addr(rs1),
         .rs2_addr(rs2),
         .rd_addr(rd),
-        .rd_data(alu_result),
+        .rd_data(reg_write_data),
         .rs1_data(rs1_data),
         .rs2_data(rs2_data)
     );
