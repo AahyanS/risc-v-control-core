@@ -25,11 +25,14 @@ frequency caused by a hardware design decision, not just "a CPU that works."
       (synchronous reset to 0, advances to whatever pc_next carries;
       pc+4/branch-target arithmetic lives outside this module;
       files: `pc.v`, `tb_pc.v`)
-- [ ] Instruction memory + fetch wiring (pc -> imem address -> instruction
-      word) — **next task**
+- [x] Instruction memory written and testbench passing
+      (256 x 32-bit combinational ROM, addressed by pc's byte address;
+      no toolchain yet, so programs are hand-loaded via hierarchical
+      reference in testbenches; files: `imem.v`, `tb_imem.v`)
 - [ ] Data memory + load/store support
-- [ ] Single-cycle core integration (wire ALU + regfile + control + fetch +
-      memory together into a working single-cycle RV32I CPU)
+- [ ] Single-cycle core integration (wire pc + imem + control + alu +
+      regfile together into a working single-cycle RV32I CPU) —
+      **next task**
 - [ ] Pipelining: 5-stage pipeline (IF / ID / EX / MEM / WB)
 - [ ] Hazard detection + forwarding for the pipeline
 - [ ] Custom PID-MAC instruction (see below)
@@ -124,9 +127,10 @@ with the ALU:
 
 ## Immediate next step
 
-Build the program counter + instruction memory + fetch logic: a PC
-register that increments by 4 each cycle (or jumps/branches once those
-are wired up), an instruction memory to fetch from, and the logic to
-slice a fetched 32-bit word into opcode/funct3/funct7/rd/rs1/rs2/imm
-fields for the control unit and register file. Write it and its
-testbench following the same pattern as the earlier modules.
+Wire pc + imem + control + alu + regfile together into a single-cycle
+core (`cpu.v`): slice the fetched instruction into opcode/funct3/
+funct7/rd/rs1/rs2/imm, feed the fields into control and regfile, mux
+the ALU's second operand between rs2 and the sign-extended immediate
+per control's alu_src, and drive pc_next = pc + 4. Limited to R-type/
+I-type ALU instructions for now, matching what control.v decodes;
+data memory and load/store support come after this integration.
