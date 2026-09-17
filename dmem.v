@@ -22,9 +22,11 @@ module dmem (
     output reg [31:0] read_data
 );
 
-    // 1024 bytes = 1KB, byte-addressable - same total capacity as
-    // imem's 256 words, just a different addressing granularity
-    reg [7:0] mem [0:1023];
+    // 8192 bytes = 8KB, byte-addressable - same capacity as imem.
+    // Originally 1KB; enlarged after real riscv-tests compliance
+    // binaries (which include pipeline-bypass sub-tests this core
+    // doesn't even need yet) turned out to exceed 1KB.
+    reg [7:0] mem [0:8191];
 
     // ---- Read (combinational) ----
     always @(*) begin

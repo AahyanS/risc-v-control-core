@@ -22,9 +22,11 @@ module imem (
     output [31:0] instr
 );
 
-    // 1024 bytes = 1KB of instruction space - same total capacity as
-    // the original word-array design, just addressed differently
-    reg [7:0] mem [0:1023];
+    // 8192 bytes = 8KB of instruction space. Originally 1KB; enlarged
+    // after real riscv-tests compliance binaries (which include
+    // pipeline-bypass sub-tests this core doesn't even need yet)
+    // turned out to exceed 1KB.
+    reg [7:0] mem [0:8191];
 
     assign instr = {mem[addr+3], mem[addr+2], mem[addr+1], mem[addr]};
 

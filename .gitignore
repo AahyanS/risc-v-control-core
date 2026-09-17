@@ -9,3 +9,6 @@ sim_*
 # since testbenches read those directly via $readmemh
 sw/*.elf
 sw/*.o
+
+# Compliance suite build output - regenerate with ./run_compliance.sh
+build_compliance/

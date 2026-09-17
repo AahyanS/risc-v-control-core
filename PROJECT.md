@@ -96,11 +96,30 @@ locking or scratchpad memory for exactly this reason).
       imem.v with no hand-editing; verified end-to-end in
       tb_cpu_toolchain.v. First program on this core that wasn't
       hand-assembled instruction by instruction.)
-- [ ] **Passes the official RV32I architectural test suite**
-      (riscv-tests / RISCOF) — this is the credibility gate for every
-      claim that follows — **next task**
+- [x] **Passes the official RV32I architectural test suite**
+      (all 40/40 applicable rv32ui tests from riscv-tests: add, addi,
+      and, andi, auipc, beq, bge, bgeu, blt, bltu, bne, jal, jalr, lb,
+      lbu, lh, lhu, lui, lw, or, ori, sb, sh, simple, sll, slli, slt,
+      slti, sltiu, sltu, sra, srai, srl, srli, sub, sw, xor, xori,
+      ld_st, st_ld. fence_i and ma_data excluded - not applicable/not
+      yet supported. Used the *official, unmodified* per-instruction
+      test bodies (they're pure integer arithmetic, no CSRs needed),
+      but a custom minimal harness (`compliance/env/riscv_test.h` +
+      `link.ld`) replacing the official CSR/ecall/trap-based pass-fail
+      signaling this core doesn't support with a direct memory write,
+      same convention (RESULT_ADDR gets 1=pass or (testnum<<1)|1=fail).
+      Found and fixed a real architectural wrinkle: this core is
+      Harvard-style (separate imem/dmem), but riscv-tests binaries
+      assume one unified address space, so a compiled test's embedded
+      data has to be mirrored into dmem at test-load time for
+      load/store tests to find it - a testbench-level workaround, not
+      a CPU change. Also discovered several R-type ALU test binaries
+      (which include pipeline-bypass sub-tests this core doesn't need
+      yet) exceed 1KB, so imem/dmem were enlarged to 8KB. Files:
+      `compliance/`, `tb_compliance.v`, `run_compliance.sh`.)
 - [ ] Differential co-simulation against a reference ISS (Spike, or a
-      small Python model): compare architectural state per retire
+      small Python model): compare architectural state per retire —
+      **next task**
 
 ### Phase 2 — Pipeline
 
@@ -145,8 +164,9 @@ locking or scratchpad memory for exactly this reason).
 - Git + a GitHub repo for version control
 - Target board: Digilent Basys3 (Xilinx Artix-7 XC7A35T). Vivado not
   installed yet — install once the board is in hand.
-- RISC-V GNU toolchain: not installed yet. Early modules use hand-written
-  hex instructions in testbenches instead of compiled programs.
+- RISC-V GNU toolchain: xPack `riscv-none-elf-gcc` 15.2.0, installed at
+  `C:\riscv-toolchain\`, on PATH. Early modules used hand-written hex
+  instructions in testbenches; real programs are compiled now.
 
 ## Working pattern for every module
 
@@ -313,15 +333,14 @@ Electrical cautions:
 
 ## Immediate next step
 
-Set up the official RISC-V architectural compliance suite (riscv-tests,
-or RISCOF as the harness around it) and run it against this core. This
-is the credibility gate the project plan calls out explicitly: "my own
-testbenches pass" and "passes the official RV32I test suite" are very
-different claims, and everything downstream (pipelining, compliance
-after adding hazards, the eventual cache/lock work) should be validated
-against this same suite as it evolves. Concretely: clone riscv-tests,
-build its rv32ui (RV32 user-mode integer) test binaries with the
-now-installed toolchain, and write the small amount of glue needed to
-load each test's compiled output into this core and check its pass/
-fail signature (riscv-tests programs write a known value to a fixed
-address on completion, similar in spirit to sw/sum_loop.c's approach).
+Compliance suite is passing (40/40). Next: differential co-simulation
+against a reference instruction set simulator (Spike, or a small
+hand-written Python model) - run the same instruction stream through
+both, compare architectural state (register file, PC, memory writes)
+after every retired instruction, and flag the first point of
+divergence automatically. This catches classes of bugs directed tests
+don't: anything that depends on a *specific sequence* of instructions
+rather than one instruction in isolation. Concretely: install/build
+Spike (or write a minimal Python ISS covering the base integer ISA),
+generate or reuse a random instruction sequence, and compare trace
+output cycle-by-cycle against this core's own execution.

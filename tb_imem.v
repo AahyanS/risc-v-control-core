@@ -52,7 +52,7 @@ module tb_imem;
         load_word(32'd4,    32'hB1B1B1B1);
         load_word(32'd8,    32'hC2C2C2C2);
         load_word(32'd12,   32'hD3D3D3D3);
-        load_word(32'd1020, 32'hFEFEFEFE); // last valid word, top of the 1KB array
+        load_word(32'd8188, 32'hFEFEFEFE); // last valid word, top of the 8KB array
 
         // Word 0 lives at byte address 0
         addr = 32'd0;
@@ -70,8 +70,8 @@ module tb_imem;
         addr = 32'd12;
         check(32'hD3D3D3D3, "WORD_3");
 
-        // Last word: byte address 1020..1023, the top of the 1KB array
-        addr = 32'd1020;
+        // Last word: byte address 8188..8191, the top of the 8KB array
+        addr = 32'd8188;
         check(32'hFEFEFEFE, "LAST_WORD");
 
         // Verify little-endian byte placement directly: the low byte
