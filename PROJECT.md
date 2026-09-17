@@ -117,9 +117,27 @@ locking or scratchpad memory for exactly this reason).
       (which include pipeline-bypass sub-tests this core doesn't need
       yet) exceed 1KB, so imem/dmem were enlarged to 8KB. Files:
       `compliance/`, `tb_compliance.v`, `run_compliance.sh`.)
-- [ ] Differential co-simulation against a reference ISS (Spike, or a
-      small Python model): compare architectural state per retire —
-      **next task**
+- [x] Differential co-simulation against a reference ISS
+      (`cosim/iss.py`: a from-scratch Python RV32I simulator,
+      deliberately mirroring this core's exact architecture rather
+      than an idealized unified-memory machine - same Harvard imem/
+      dmem split, and only the opcodes control.v actually implements.
+      Chosen over building Spike from source, which is real toolchain
+      friction on Windows for the same verification value here.
+      `tb_cosim.v` dumps a per-instruction trace from the real core in
+      the same format; `cosim/compare_traces.py` diffs the two and
+      reports the first divergence. Ran against sw/sum_loop.hex: all
+      110 instructions matched exactly. Along the way, caught a real
+      and non-obvious fact, not a bug: general-purpose registers have
+      no defined reset value on this core (matching real RISC-V
+      hardware - the spec doesn't require one either), so a compiler-
+      generated prologue spilling an as-yet-unset register produced a
+      spurious mismatch against the ISS's zero-initialized assumption.
+      Fixed at the software level, the textbook-correct way: sw/crt0.s
+      now explicitly zeroes x1-x31 at startup, the same thing
+      riscv-tests' own INIT_XREG macro does and for the same reason -
+      don't rely on hardware reset state you're not guaranteed. Files:
+      `cosim/`, `tb_cosim.v`, updated `sw/crt0.s`.)
 
 ### Phase 2 — Pipeline
 
@@ -333,14 +351,19 @@ Electrical cautions:
 
 ## Immediate next step
 
-Compliance suite is passing (40/40). Next: differential co-simulation
-against a reference instruction set simulator (Spike, or a small
-hand-written Python model) - run the same instruction stream through
-both, compare architectural state (register file, PC, memory writes)
-after every retired instruction, and flag the first point of
-divergence automatically. This catches classes of bugs directed tests
-don't: anything that depends on a *specific sequence* of instructions
-rather than one instruction in isolation. Concretely: install/build
-Spike (or write a minimal Python ISS covering the base integer ISA),
-generate or reuse a random instruction sequence, and compare trace
-output cycle-by-cycle against this core's own execution.
+Phase 1 is complete: base RV32I, passing the official compliance suite,
+verified against an independent reference model. Next is Phase 2 -
+converting the single-cycle datapath into a 5-stage pipeline (IF / ID /
+EX / MEM / WB). This means splitting cpu.v's combinational chain into
+clocked pipeline registers between stages, then immediately confronting
+hazards the single-cycle design never had to worry about: data hazards
+(an instruction reading a register the previous instruction hasn't
+written back yet - needs forwarding) and control hazards (a branch's
+outcome isn't known until the EX stage, but fetch has already grabbed
+the next 1-2 instructions sequentially - needs either a stall or a
+simple predict-not-taken-and-flush scheme to start). The compliance
+suite and cosim harness built in this phase aren't one-off checks -
+both should be re-run against the pipelined core once it exists, since
+hazards are exactly the kind of bug directed tests and even
+differential testing on a single-cycle reference can miss if the
+reference model doesn't also model pipeline timing.
