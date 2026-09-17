@@ -3,3 +3,9 @@ sim_*
 
 # Waveform dumps
 *.vcd
+
+# Compiled RISC-V program binaries (regenerate from sw/*.c, sw/*.s with
+# riscv-none-elf-gcc) - the .hex files they produce ARE committed,
+# since testbenches read those directly via $readmemh
+sw/*.elf
+sw/*.o

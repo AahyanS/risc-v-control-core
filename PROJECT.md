@@ -77,11 +77,28 @@ locking or scratchpad memory for exactly this reason).
       LUI writes it directly, AUIPC adds it to pc via a dedicated
       adder - neither touches the ALU; verified in tb_cpu.v; files:
       updated `control.v`, `cpu.v`, `tb_control.v`, `tb_cpu.v`)
-- [ ] RISC-V GNU toolchain installed; compile real C/assembly instead of
-      hand-assembled hex — **next task**
+- [x] RISC-V GNU toolchain installed
+      (xPack riscv-none-elf-gcc 15.2.0, bare-metal rv32i/ilp32 target;
+      installed at `C:\riscv-toolchain\`, on PATH; verified by
+      assembling a 3-instruction program and confirming the output
+      machine code exactly matches tb_cpu.v's hand-derived encodings)
+- [x] imem.v reshaped to byte-addressable (1024 x 8-bit, matching
+      dmem.v's pattern) so it can be loaded via $readmemh from a real
+      objcopy hex dump instead of hand-packed 32-bit words; tb_imem.v
+      and tb_cpu.v updated to load byte-by-byte accordingly, full
+      regression still passing (39/39 in tb_cpu.v)
+- [x] Compile a real program with the toolchain and load it via $readmemh
+      (sw/crt0.s + sw/sum_loop.c: a minimal startup stub sets up sp
+      and hands off to main(), which sums 1..5 and stores the result
+      to a fixed data memory address; compiled with
+      `riscv-none-elf-gcc -march=rv32i -mabi=ilp32`, extracted with
+      `objcopy -O verilog`, loaded directly into the byte-addressable
+      imem.v with no hand-editing; verified end-to-end in
+      tb_cpu_toolchain.v. First program on this core that wasn't
+      hand-assembled instruction by instruction.)
 - [ ] **Passes the official RV32I architectural test suite**
       (riscv-tests / RISCOF) — this is the credibility gate for every
-      claim that follows
+      claim that follows — **next task**
 - [ ] Differential co-simulation against a reference ISS (Spike, or a
       small Python model): compare architectural state per retire
 
@@ -296,12 +313,15 @@ Electrical cautions:
 
 ## Immediate next step
 
-Base RV32I is now functionally complete (R-type, I-type, loads, stores,
-branches, JAL/JALR, LUI/AUIPC), all verified in simulation with hand-
-assembled programs. Next: install the RISC-V GNU toolchain
-(riscv32-unknown-elf-gcc/as/objcopy) so programs can be written in C/
-assembly and compiled instead of hand-encoded, then extract raw
-instruction words (e.g. via objcopy to a hex/bin file) to load into
-`imem.v` in place of hardcoded testbench values. This unblocks writing
-a real, nontrivial test program instead of hand-assembling everything
-one instruction at a time.
+Set up the official RISC-V architectural compliance suite (riscv-tests,
+or RISCOF as the harness around it) and run it against this core. This
+is the credibility gate the project plan calls out explicitly: "my own
+testbenches pass" and "passes the official RV32I test suite" are very
+different claims, and everything downstream (pipelining, compliance
+after adding hazards, the eventual cache/lock work) should be validated
+against this same suite as it evolves. Concretely: clone riscv-tests,
+build its rv32ui (RV32 user-mode integer) test binaries with the
+now-installed toolchain, and write the small amount of glue needed to
+load each test's compiled output into this core and check its pass/
+fail signature (riscv-tests programs write a known value to a fixed
+address on completion, similar in spirit to sw/sum_loop.c's approach).

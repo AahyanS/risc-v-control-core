@@ -1,24 +1,31 @@
 // imem.v
 // Instruction memory for RV32I
 //
-// Combinational read-only memory, addressed by the PC. addr is a byte
-// address (matches pc.v, which advances by 4 each step); since every
-// instruction is a 4-byte-aligned 32-bit word, the bottom 2 bits of
-// addr are always 0 and are dropped when indexing the word array.
+// Combinational read-only memory, addressed by the PC. Byte-addressable
+// (same pattern as dmem.v) so it can be loaded directly from a real
+// compiled program via $readmemh: `riscv-none-elf-objcopy -O verilog`
+// emits exactly one byte value per array entry, which only lines up
+// with a byte-wide array like this one - a 32-bit-wide word array
+// (the original design) would need every 4 bytes manually repacked
+// first.
 //
-// No RISC-V toolchain is installed yet, so there's no loader here -
-// a testbench populates mem[] directly via hierarchical reference
-// (e.g. uut.mem[0] = 32'h...) with hand-written instruction words.
+// addr is a byte address (matches pc.v, which advances by 4 each
+// step); reads reassemble 4 consecutive bytes little-endian, same as
+// dmem.v's word-read case.
+//
+// Without a loaded hex file, a testbench can still populate mem[]
+// directly via hierarchical reference (e.g. uut.mem[0] = 8'h...) with
+// hand-written bytes, same as before.
 
 module imem (
     input  [31:0] addr,
     output [31:0] instr
 );
 
-    // 256 words = 1KB of instruction space - arbitrary, resize later
-    reg [31:0] mem [0:255];
+    // 1024 bytes = 1KB of instruction space - same total capacity as
+    // the original word-array design, just addressed differently
+    reg [7:0] mem [0:1023];
 
-    // addr[9:2]: drop the 2 byte-offset bits, keep 8 bits -> 256 entries
-    assign instr = mem[addr[9:2]];
+    assign instr = {mem[addr+3], mem[addr+2], mem[addr+1], mem[addr]};
 
 endmodule

@@ -45,6 +45,18 @@ module tb_cpu;
         end
     endtask
 
+    // imem.v is byte-addressable now (matching what a real objcopy hex
+    // dump loads via $readmemh), so a 32-bit instruction word has to be
+    // split into 4 little-endian byte writes instead of one word write.
+    task load_instr(input [31:0] byte_addr, input [31:0] word);
+        begin
+            uut.imem_inst.mem[byte_addr]   = word[7:0];
+            uut.imem_inst.mem[byte_addr+1] = word[15:8];
+            uut.imem_inst.mem[byte_addr+2] = word[23:16];
+            uut.imem_inst.mem[byte_addr+3] = word[31:24];
+        end
+    endtask
+
     initial begin
         clk   = 1'b0;
         reset = 1'b1;
@@ -59,13 +71,13 @@ module tb_cpu;
         //   and  x5, x1, x2   -> x5 = 0
         //   or   x6, x1, x2   -> x6 = 15
         //   addi x7, x0, -1   -> x7 = 0xFFFFFFFF
-        uut.imem_inst.mem[0] = 32'h00500093;
-        uut.imem_inst.mem[1] = 32'h00A00113;
-        uut.imem_inst.mem[2] = 32'h002081B3;
-        uut.imem_inst.mem[3] = 32'h40110233;
-        uut.imem_inst.mem[4] = 32'h0020F2B3;
-        uut.imem_inst.mem[5] = 32'h0020E333;
-        uut.imem_inst.mem[6] = 32'hFFF00393;
+        load_instr(32'd0,  32'h00500093);
+        load_instr(32'd4,  32'h00A00113);
+        load_instr(32'd8,  32'h002081B3);
+        load_instr(32'd12, 32'h40110233);
+        load_instr(32'd16, 32'h0020F2B3);
+        load_instr(32'd20, 32'h0020E333);
+        load_instr(32'd24, 32'hFFF00393);
 
         // Load/store extension to the same program:
         //   addi x1, x0, 100  -> x1 = 100 (base address)
@@ -76,14 +88,14 @@ module tb_cpu;
         //   sb   x4, 4(x1)    -> mem[104] = 0xFB (low byte of x4)
         //   lb   x5, 4(x1)    -> x5 = 0xFFFFFFFB (sign-extended)
         //   lbu  x6, 4(x1)    -> x6 = 0x000000FB (zero-extended)
-        uut.imem_inst.mem[7]  = 32'h06400093;
-        uut.imem_inst.mem[8]  = 32'h02A00113;
-        uut.imem_inst.mem[9]  = 32'h0020A023;
-        uut.imem_inst.mem[10] = 32'h0000A183;
-        uut.imem_inst.mem[11] = 32'hFFB00213;
-        uut.imem_inst.mem[12] = 32'h00408223;
-        uut.imem_inst.mem[13] = 32'h00408283;
-        uut.imem_inst.mem[14] = 32'h0040C303;
+        load_instr(32'd28, 32'h06400093);
+        load_instr(32'd32, 32'h02A00113);
+        load_instr(32'd36, 32'h0020A023);
+        load_instr(32'd40, 32'h0000A183);
+        load_instr(32'd44, 32'hFFB00213);
+        load_instr(32'd48, 32'h00408223);
+        load_instr(32'd52, 32'h00408283);
+        load_instr(32'd56, 32'h0040C303);
 
         // Branch/jump extension: a real loop, plus a function call/
         // return. PC-relative immediates are relative offsets, so this
@@ -114,20 +126,20 @@ module tb_cpu;
         //
         // Expected: x1=15 (1+2+3+4+5), x2=6, x3=6, x5=100, x7=77, x9=999,
         // x10=0x12345000, x11=pc+0x1000
-        uut.imem_inst.mem[15] = 32'h00000093;
-        uut.imem_inst.mem[16] = 32'h00100113;
-        uut.imem_inst.mem[17] = 32'h00600193;
-        uut.imem_inst.mem[18] = 32'h002080B3;
-        uut.imem_inst.mem[19] = 32'h00110113;
-        uut.imem_inst.mem[20] = 32'hFE314CE3;
-        uut.imem_inst.mem[21] = 32'h06400293;
-        uut.imem_inst.mem[22] = 32'h00C0036F;
-        uut.imem_inst.mem[23] = 32'h3E700493;
-        uut.imem_inst.mem[24] = 32'h00C0006F;
-        uut.imem_inst.mem[25] = 32'h04D00393;
-        uut.imem_inst.mem[26] = 32'h00030067;
-        uut.imem_inst.mem[27] = 32'h12345537;
-        uut.imem_inst.mem[28] = 32'h00001597;
+        load_instr(32'd60,  32'h00000093);
+        load_instr(32'd64,  32'h00100113);
+        load_instr(32'd68,  32'h00600193);
+        load_instr(32'd72,  32'h002080B3);
+        load_instr(32'd76,  32'h00110113);
+        load_instr(32'd80,  32'hFE314CE3);
+        load_instr(32'd84,  32'h06400293);
+        load_instr(32'd88,  32'h00C0036F);
+        load_instr(32'd92,  32'h3E700493);
+        load_instr(32'd96,  32'h00C0006F);
+        load_instr(32'd100, 32'h04D00393);
+        load_instr(32'd104, 32'h00030067);
+        load_instr(32'd108, 32'h12345537);
+        load_instr(32'd112, 32'h00001597);
 
         // Hold reset through one clock edge to establish pc = 0, then
         // release it at a safe (falling-edge) point
