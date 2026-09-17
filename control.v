@@ -3,12 +3,17 @@
 //
 // Decodes the opcode/funct3/funct7 fields of a fetched instruction and
 // drives the ALU operation select and datapath control signals.
-// Currently handles R-type/I-type ALU instructions plus loads/stores
-// (no branches/jumps yet - those need PC-relative addressing wired up).
+// Handles R-type/I-type ALU instructions, loads/stores, branches,
+// jumps (JAL/JALR), and LUI/AUIPC - this is essentially all of base
+// RV32I.
 //
 // funct3 is not needed here for loads/stores beyond what's already
 // covered by opcode - dmem.v consumes the raw funct3 directly for
 // width/signedness, since it's already the exact ISA encoding it needs.
+//
+// Branch condition evaluation and the pc_next/write-back muxes live in
+// cpu.v, not here - this module only decodes "what kind of instruction
+// is this," not "was the branch taken."
 
 module control (
     input  [6:0] opcode,
@@ -19,7 +24,11 @@ module control (
     output reg       reg_write,
     output reg       mem_write,
     output reg       mem_to_reg,
-    output reg       imm_sel
+    output reg       imm_sel,
+    output reg       branch,
+    output reg       jump,
+    output reg       lui,
+    output reg       auipc
 );
 
     // Opcodes handled so far
@@ -27,9 +36,18 @@ module control (
     localparam OPCODE_I_TYPE = 7'b0010011;
     localparam OPCODE_LOAD   = 7'b0000011;
     localparam OPCODE_STORE  = 7'b0100011;
+    localparam OPCODE_BRANCH = 7'b1100011;
+    localparam OPCODE_JAL    = 7'b1101111;
+    localparam OPCODE_JALR   = 7'b1100111;
+    localparam OPCODE_LUI    = 7'b0110111;
+    localparam OPCODE_AUIPC  = 7'b0010111;
 
-    // ALU op used for address calculation on every load/store: rs1 + imm
-    localparam ALU_ADD = 4'b0000;
+    // ALU op used for address calculation on every load/store/JALR:
+    // rs1 + imm
+    localparam ALU_ADD  = 4'b0000;
+    localparam ALU_SUB  = 4'b0001;
+    localparam ALU_SLT  = 4'b1000;
+    localparam ALU_SLTU = 4'b1001;
 
     // funct7 value that marks the "alternate" op within a funct3 group
     // (SUB instead of ADD, SRA instead of SRL)
@@ -44,6 +62,10 @@ module control (
         mem_write  = 1'b0;
         mem_to_reg = 1'b0;
         imm_sel    = 1'b0; // 0 = I-type immediate (the only format used so far)
+        branch     = 1'b0;
+        jump       = 1'b0;
+        lui        = 1'b0;
+        auipc      = 1'b0;
 
         case (opcode)
             OPCODE_R_TYPE: begin
@@ -91,6 +113,46 @@ module control (
                 alu_ctrl   = ALU_ADD;
                 mem_write  = 1'b1;
                 imm_sel    = 1'b1; // S-type immediate, not I-type
+            end
+
+            OPCODE_BRANCH: begin
+                branch  = 1'b1;
+                alu_src = 1'b0; // compare rs1 directly against rs2
+                // funct3[2:1] picks the comparison family; funct3[0]
+                // (whether this branch is the "inverted" variant, e.g.
+                // BNE vs BEQ) is handled in cpu.v, not here - this
+                // only needs to pick which ALU op computes the
+                // underlying comparison.
+                case (funct3[2:1])
+                    2'b00:   alu_ctrl = ALU_SUB;  // BEQ/BNE: compare via subtraction + zero flag
+                    2'b10:   alu_ctrl = ALU_SLT;  // BLT/BGE: signed less-than
+                    2'b11:   alu_ctrl = ALU_SLTU; // BLTU/BGEU: unsigned less-than
+                    default: alu_ctrl = ALU_SUB;
+                endcase
+            end
+
+            OPCODE_JAL: begin
+                reg_write = 1'b1; // writes pc+4 into rd (the return address)
+                jump      = 1'b1;
+            end
+
+            OPCODE_JALR: begin
+                reg_write = 1'b1; // writes pc+4 into rd (the return address)
+                jump      = 1'b1;
+                alu_src   = 1'b1; // ALU computes rs1 + imm (jump target)
+                alu_ctrl  = ALU_ADD;
+                // imm_sel stays 0 (I-type immediate) - JALR reuses the
+                // same contiguous 12-bit layout as loads/ADDI
+            end
+
+            OPCODE_LUI: begin
+                reg_write = 1'b1; // rd = imm_u directly, no ALU involved
+                lui       = 1'b1;
+            end
+
+            OPCODE_AUIPC: begin
+                reg_write = 1'b1; // rd = pc + imm_u, computed in cpu.v
+                auipc     = 1'b1;
             end
 
             default: ; // unrecognized opcode: keep the NOP-like defaults above

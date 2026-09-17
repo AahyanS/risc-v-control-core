@@ -24,17 +24,24 @@ module tb_cpu;
 
     // Reads a register directly out of the regfile submodule via
     // hierarchical reference - the same trick used to load imem.
+    // x0's raw storage (regs[0]) is never written by regfile.v at all
+    // (only its read port is hardwired to return 0), so peeking at
+    // regs[0] directly would see stale/unknown data; mirror the same
+    // "address 0 reads as 0" rule the real read ports apply.
+    function [31:0] peek_reg(input [4:0] reg_num);
+        peek_reg = (reg_num == 5'd0) ? 32'd0 : uut.regfile_inst.regs[reg_num];
+    endfunction
+
     task check_reg(input [4:0] reg_num, input [31:0] exp_val,
                     input [63:0] opname);
         begin
             #1;
-            if (uut.regfile_inst.regs[reg_num] !== exp_val)
+            if (peek_reg(reg_num) !== exp_val)
                 $display("FAIL [%0s]: x%0d got=%0h expected=%0h",
-                          opname, reg_num,
-                          uut.regfile_inst.regs[reg_num], exp_val);
+                          opname, reg_num, peek_reg(reg_num), exp_val);
             else
                 $display("PASS [%0s]: x%0d = %0h",
-                          opname, reg_num, uut.regfile_inst.regs[reg_num]);
+                          opname, reg_num, peek_reg(reg_num));
         end
     endtask
 
@@ -77,6 +84,50 @@ module tb_cpu;
         uut.imem_inst.mem[12] = 32'h00408223;
         uut.imem_inst.mem[13] = 32'h00408283;
         uut.imem_inst.mem[14] = 32'h0040C303;
+
+        // Branch/jump extension: a real loop, plus a function call/
+        // return. PC-relative immediates are relative offsets, so this
+        // whole block can be appended here unchanged - the encoded
+        // branch/jump targets shift along with wherever the block
+        // itself lands (byte address 60 onward), no recomputation
+        // needed.
+        //   addi x1, x0, 0     -> x1 = 0            (sum)
+        //   addi x2, x0, 1     -> x2 = 1            (i)
+        //   addi x3, x0, 6     -> x3 = 6            (limit)
+        // loop:
+        //   add  x1, x1, x2    -> sum += i
+        //   addi x2, x2, 1     -> i++
+        //   blt  x2, x3, loop  -> repeat while i < 6
+        //   addi x5, x0, 100   -> x5 = 100 (proves control resumed after the loop)
+        //   jal  x6, func      -> x6 = return address; jump to func
+        // (return point, right after the jal:)
+        //   addi x9, x0, 999   -> x9 = 999 (proves jalr returned here)
+        //   jal  x0, skip      -> unconditional "goto" (rd=x0: no link
+        //                         saved), jumps past func so execution
+        //                         never falls back into it a second time
+        // func:
+        //   addi x7, x0, 77    -> x7 = 77
+        //   jalr x0, x6, 0     -> return to whatever x6 holds
+        // skip:
+        //   lui   x10, 0x12345 -> x10 = 0x12345000
+        //   auipc x11, 0x1     -> x11 = pc_of_this_instr + 0x1000
+        //
+        // Expected: x1=15 (1+2+3+4+5), x2=6, x3=6, x5=100, x7=77, x9=999,
+        // x10=0x12345000, x11=pc+0x1000
+        uut.imem_inst.mem[15] = 32'h00000093;
+        uut.imem_inst.mem[16] = 32'h00100113;
+        uut.imem_inst.mem[17] = 32'h00600193;
+        uut.imem_inst.mem[18] = 32'h002080B3;
+        uut.imem_inst.mem[19] = 32'h00110113;
+        uut.imem_inst.mem[20] = 32'hFE314CE3;
+        uut.imem_inst.mem[21] = 32'h06400293;
+        uut.imem_inst.mem[22] = 32'h00C0036F;
+        uut.imem_inst.mem[23] = 32'h3E700493;
+        uut.imem_inst.mem[24] = 32'h00C0006F;
+        uut.imem_inst.mem[25] = 32'h04D00393;
+        uut.imem_inst.mem[26] = 32'h00030067;
+        uut.imem_inst.mem[27] = 32'h12345537;
+        uut.imem_inst.mem[28] = 32'h00001597;
 
         // Hold reset through one clock edge to establish pc = 0, then
         // release it at a safe (falling-edge) point
@@ -145,10 +196,110 @@ module tb_cpu;
         @(posedge clk); @(negedge clk);
         check_reg(5'd6, 32'h000000FB, "LBU_ZERO_EXTEND");
 
-        // pc should now sit past all 15 instructions: 15 * 4 = 60
+        // pc should now sit past all 15 load/store-program instructions
         #1;
         if (uut.pc_curr !== 32'd60)
-            $display("FAIL [PC_FINAL]: got=%0d expected=60", uut.pc_curr);
+            $display("FAIL [PC_AFTER_LOADSTORE]: got=%0d expected=60", uut.pc_curr);
+        else
+            $display("PASS [PC_AFTER_LOADSTORE]: pc=%0d", uut.pc_curr);
+
+        // ---- Loop: 3 setup instructions ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd1, 32'd0, "LOOP_INIT_SUM");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd2, 32'd1, "LOOP_INIT_I");
+
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd3, 32'd6, "LOOP_INIT_LIMIT");
+
+        // ---- 5 loop iterations: add, addi, blt each time. Checking
+        // sum and i right after each blt confirms both the loop body's
+        // arithmetic and the branch decision (taken 4 times, then not
+        // taken on the 5th, when i finally reaches the limit). ----
+        @(posedge clk); @(negedge clk); // add
+        @(posedge clk); @(negedge clk); // addi
+        @(posedge clk); @(negedge clk); // blt (taken: 2 < 6)
+        check_reg(5'd1, 32'd1, "LOOP_ITER1_SUM");
+        check_reg(5'd2, 32'd2, "LOOP_ITER1_I");
+
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk); // blt (taken: 3 < 6)
+        check_reg(5'd1, 32'd3, "LOOP_ITER2_SUM");
+        check_reg(5'd2, 32'd3, "LOOP_ITER2_I");
+
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk); // blt (taken: 4 < 6)
+        check_reg(5'd1, 32'd6, "LOOP_ITER3_SUM");
+        check_reg(5'd2, 32'd4, "LOOP_ITER3_I");
+
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk); // blt (taken: 5 < 6)
+        check_reg(5'd1, 32'd10, "LOOP_ITER4_SUM");
+        check_reg(5'd2, 32'd5, "LOOP_ITER4_I");
+
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk);
+        @(posedge clk); @(negedge clk); // blt (NOT taken: 6 < 6 is false)
+        check_reg(5'd1, 32'd15, "LOOP_ITER5_SUM_FINAL");
+        check_reg(5'd2, 32'd6, "LOOP_ITER5_I_FINAL");
+
+        // ---- After the loop: proves control fell through the loop
+        // correctly instead of continuing to branch ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd5, 32'd100, "AFTER_LOOP");
+
+        // ---- JAL: jumps to func, saves the return address in x6 ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd6, 32'd92, "JAL_LINK_ADDR");
+
+        // ---- func body ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd7, 32'd77, "FUNC_BODY");
+
+        // ---- JALR: returns to whatever x6 holds. rd=x0 here, so this
+        // also re-confirms x0's hardwired-zero guarantee holds even
+        // when a real instruction (not just a testbench poke) tries to
+        // write it. ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd0, 32'd0, "JALR_RD_X0_IGNORED");
+        #1;
+        if (uut.pc_curr !== 32'd92)
+            $display("FAIL [JALR_RETURN_TARGET]: got=%0d expected=92", uut.pc_curr);
+        else
+            $display("PASS [JALR_RETURN_TARGET]: pc=%0d", uut.pc_curr);
+
+        // ---- Return point: proves execution resumed exactly where
+        // the jal left off, not somewhere else ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd9, 32'd999, "RETURN_POINT");
+
+        // ---- Unconditional skip jump (jal x0, skip): rd=x0 so nothing
+        // is written; this only proves the jump itself was taken,
+        // landing past func rather than falling through into it again ----
+        @(posedge clk); @(negedge clk);
+        #1;
+        if (uut.pc_curr !== 32'd108)
+            $display("FAIL [SKIP_JUMP_TARGET]: got=%0d expected=108", uut.pc_curr);
+        else
+            $display("PASS [SKIP_JUMP_TARGET]: pc=%0d", uut.pc_curr);
+
+        // ---- LUI: rd gets the raw upper-immediate value, no ALU/pc
+        // involved at all ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd10, 32'h12345000, "LUI");
+
+        // ---- AUIPC: rd = pc-of-this-instruction + imm_u. The AUIPC
+        // instruction itself sits at byte 112, so 112 + 0x1000 = 4208 ----
+        @(posedge clk); @(negedge clk);
+        check_reg(5'd11, 32'd4208, "AUIPC");
+
+        #1;
+        if (uut.pc_curr !== 32'd116)
+            $display("FAIL [PC_FINAL]: got=%0d expected=116", uut.pc_curr);
         else
             $display("PASS [PC_FINAL]: pc=%0d", uut.pc_curr);
 

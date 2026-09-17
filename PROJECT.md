@@ -64,11 +64,21 @@ locking or scratchpad memory for exactly this reason).
       imm_sel control signals; write-back mux; verified end-to-end in
       cpu.v against a hand-assembled test program; files: `dmem.v`,
       `tb_dmem.v`, updated `control.v`/`cpu.v`/`tb_cpu.v`)
-- [ ] Branches (B-type) and jumps (JAL, JALR) — required before any real
-      program can run — **next task**
-- [ ] LUI / AUIPC — completes the RV32I instruction set
+- [x] Branches (B-type) and jumps (JAL, JALR)
+      (B-type/J-type immediates reassembled from their scattered
+      instruction fields; branch condition reuses the ALU's SUB/SLT/
+      SLTU outputs with funct3[0] as the invert bit; pc_next and
+      write-back muxes widened; verified with a real 5-iteration loop
+      plus a JAL/JALR call-and-return in tb_cpu.v; files: updated
+      `control.v`, `cpu.v`, `tb_control.v`, `tb_cpu.v`)
+- [x] LUI / AUIPC — completes base RV32I
+      (U-type immediate needs no sign-extension, since instr[31:12]
+      already sits exactly where the result's own top bits belong;
+      LUI writes it directly, AUIPC adds it to pc via a dedicated
+      adder - neither touches the ALU; verified in tb_cpu.v; files:
+      updated `control.v`, `cpu.v`, `tb_control.v`, `tb_cpu.v`)
 - [ ] RISC-V GNU toolchain installed; compile real C/assembly instead of
-      hand-assembled hex
+      hand-assembled hex — **next task**
 - [ ] **Passes the official RV32I architectural test suite**
       (riscv-tests / RISCOF) — this is the credibility gate for every
       claim that follows
@@ -286,12 +296,12 @@ Electrical cautions:
 
 ## Immediate next step
 
-Add branches (B-type: BEQ/BNE/BLT/BGE/BLTU/BGEU) and jumps (JAL, JALR):
-the B-type immediate (split across four non-contiguous instruction
-fields, and scaled by 2 since branch targets are always halfword-
-aligned), a branch-taken/not-taken decision fed by the ALU's existing
-`zero` output plus a new comparison mode, a pc_next mux (sequential vs.
-branch/jump target) driven by control, and JAL/JALR's extra behavior of
-writing `pc + 4` back into rd (needed for function-call return addresses).
-This is also the point where a real assembled program with loops becomes
-possible for the first time.
+Base RV32I is now functionally complete (R-type, I-type, loads, stores,
+branches, JAL/JALR, LUI/AUIPC), all verified in simulation with hand-
+assembled programs. Next: install the RISC-V GNU toolchain
+(riscv32-unknown-elf-gcc/as/objcopy) so programs can be written in C/
+assembly and compiled instead of hand-encoded, then extract raw
+instruction words (e.g. via objcopy to a hex/bin file) to load into
+`imem.v` in place of hardcoded testbench values. This unblocks writing
+a real, nontrivial test program instead of hand-assembling everything
+one instruction at a time.
