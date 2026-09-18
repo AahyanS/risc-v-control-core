@@ -141,8 +141,42 @@ locking or scratchpad memory for exactly this reason).
 
 ### Phase 2 — Pipeline
 
-- [ ] 5-stage pipeline (IF / ID / EX / MEM / WB)
-- [ ] Hazard detection + forwarding
+- [x] 5-stage pipeline (IF / ID / EX / MEM / WB)
+      (cpu_pipeline.v, built alongside the untouched single-cycle
+      cpu.v rather than replacing it; reuses every submodule
+      unchanged, only the top-level wiring is new; verified on a
+      hazard-free program - pipeline_test.s - before adding hazard
+      handling on top; files: `cpu_pipeline.v`, `sw/pipeline_test.s`,
+      `tb_cpu_pipeline.v`)
+- [x] Control hazard handling (branches/jumps resolved in EX; fetch
+      assumes sequential and gets corrected + the two wrongly-fetched
+      instructions squashed on a misprediction - "predict not-taken,"
+      standing in until the real branch predictor replaces just the
+      prediction step, not this flush mechanism)
+- [x] Hazard detection + forwarding
+      (EX/MEM and MEM/WB forwarding for the ALU's operands and a
+      store's data operand; a one-cycle load-use stall for the case
+      forwarding can't cover, since a load's result isn't ready until
+      MEM. Found and fixed a genuinely subtle timing gap along the
+      way: a producer exactly 3 instructions before its consumer has
+      its register-file write and the consumer's register-file read
+      land on the *same* clock edge - too late for EX-stage
+      forwarding (the producer has already fully retired past EX/MEM
+      and MEM/WB) and too early for a plain register read (plain
+      non-blocking-assignment semantics mean the write isn't visible
+      until the *next* cycle). Fixed with a same-cycle write-through
+      bypass at the ID stage, comparing against WB's own already-
+      registered signals - deliberately *not* added inside regfile.v
+      itself, since that module is shared with the single-cycle core,
+      where the same instruction's own read and write can share an
+      address (e.g. `addi x1,x1,5`) and doing it there creates a real
+      combinational loop through the ALU. Verified with a dedicated
+      hazard test program covering 0-gap and 1-gap ALU forwarding,
+      0-gap store-data forwarding, and the load-use stall; files:
+      `sw/pipeline_hazard_test.s`, `tb_cpu_pipeline_hazards.v`)
+- [ ] Real branch predictor (2-bit saturating counter, PC-indexed),
+      replacing the current "always predict not-taken" policy —
+      **next task**
 - [ ] Generic stall mechanism (required later for cache-miss stalls)
 - [ ] Re-run the compliance suite against the pipelined core
 
