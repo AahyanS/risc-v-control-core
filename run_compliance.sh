@@ -2,9 +2,11 @@
 # run_compliance.sh
 # Compiles compliance/isa/rv32ui/*.S with the real RISC-V toolchain
 # against this core's custom minimal test harness (compliance/env/),
-# then runs each through tb_compliance.v and reports pass/fail.
+# then runs each through a compliance testbench and reports pass/fail.
 #
-# Usage: ./run_compliance.sh
+# Usage:
+#   ./run_compliance.sh            # single-cycle core (cpu.v)
+#   ./run_compliance.sh pipeline   # pipelined core (cpu_pipeline.v)
 # (run from the repo root - relative paths assume that)
 
 set -u
@@ -15,10 +17,22 @@ OBJCOPY="$TOOLCHAIN/riscv-none-elf-objcopy.exe"
 
 TESTS="add addi and andi auipc beq bge bgeu blt bltu bne jal jalr lb lbu lh lhu lui lw or ori sb sh simple sll slli slt slti sltiu sltu sra srai srl srli sub sw xor xori ld_st st_ld"
 
+if [ "${1:-}" = "pipeline" ]; then
+    CORE_FILE="cpu_pipeline.v"
+    TB_FILE="tb_compliance_pipeline.v"
+    SIM_NAME="sim_compliance_pipeline"
+    echo "Target: pipelined core (cpu_pipeline.v)"
+else
+    CORE_FILE="cpu.v"
+    TB_FILE="tb_compliance.v"
+    SIM_NAME="sim_compliance"
+    echo "Target: single-cycle core (cpu.v)"
+fi
+
 mkdir -p build_compliance
 
 echo "Compiling testbench..."
-iverilog -o sim_compliance alu.v regfile.v control.v pc.v imem.v dmem.v cpu.v tb_compliance.v
+iverilog -o "$SIM_NAME" alu.v regfile.v control.v pc.v imem.v dmem.v "$CORE_FILE" "$TB_FILE"
 if [ $? -ne 0 ]; then
     echo "Testbench compilation failed."
     exit 1
@@ -42,7 +56,7 @@ for t in $TESTS; do
 
     "$OBJCOPY" -O verilog "build_compliance/$t.elf" "build_compliance/$t.hex"
 
-    result=$(vvp sim_compliance +HEXFILE="build_compliance/$t.hex" +TESTNAME="$t")
+    result=$(vvp "$SIM_NAME" +HEXFILE="build_compliance/$t.hex" +TESTNAME="$t")
     echo "$result"
 
     if echo "$result" | grep -q "^PASS"; then
@@ -57,4 +71,4 @@ echo "==================================="
 echo "Compliance results: $pass_count / $total passed"
 echo "==================================="
 
-rm -f sim_compliance
+rm -f "$SIM_NAME"

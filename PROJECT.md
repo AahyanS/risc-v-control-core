@@ -208,9 +208,25 @@ locking or scratchpad memory for exactly this reason).
       x-OR-anything stays x. Fixed by explicitly defining
       id_ex_opcode during squash. Files: `sw/pipeline_predictor_test.s`,
       `tb_cpu_pipeline_predictor.v`, updated `cpu_pipeline.v`.
-- [ ] Generic stall mechanism (required later for cache-miss stalls) —
-      **next task**
-- [ ] Re-run the compliance suite against the pipelined core
+- [x] Re-run the compliance suite against the pipelined core
+      (40/40, matching the single-cycle result exactly - forwarding,
+      the load-use stall, the flush mechanism, and the branch
+      predictor all hold up against the official test suite, zero
+      regressions. Reused the existing compliance infrastructure
+      almost unchanged: cpu_pipeline.v shares cpu.v's submodule
+      instance names, so tb_compliance_pipeline.v is nearly identical
+      to tb_compliance.v, just instantiating the other core;
+      run_compliance.sh takes an optional `pipeline` argument to pick
+      which. Files: `tb_compliance_pipeline.v`, updated
+      `run_compliance.sh`.)
+- [ ] Generic stall mechanism (required later for cache-miss stalls) -
+      deliberately deferred rather than built speculatively now: the
+      only stall that exists today (load-use) is hardcoded for one
+      specific condition and a fixed one-cycle duration, and a truly
+      generic version needs to freeze multiple stages for a variable
+      duration driven by an external signal whose exact shape isn't
+      known until the Phase 3 cache controller actually exists to
+      define it — **next task is Phase 3**
 
 ### Phase 3 — Memory hierarchy (the thesis)
 
