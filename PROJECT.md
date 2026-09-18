@@ -230,9 +230,28 @@ locking or scratchpad memory for exactly this reason).
 
 ### Phase 3 — Memory hierarchy (the thesis)
 
-- [ ] QSPI flash read controller (start with plain SPI 0x03 reads, then
-      optimize to quad/fast-read)
-- [ ] XIP instruction-fetch path: program lives in flash, not BRAM
+- [x] QSPI flash read controller, plain SPI 0x03 reads
+      (`spi_flash_ctrl.v`: mode-0 timing, SCK toggling once per clk
+      cycle - one bit transferred per SCK period, so ~128 clk cycles
+      per 32-bit read (8 cmd + 24 addr + 32 data bits, 2 clk/bit) - a
+      real ~128x latency gap versus BRAM's 1-cycle fetch, not an
+      artificial one. Verified against `spi_flash_model.v`, a genuine
+      behavioral SPI slave (reacts only to sck/cs_n/mosi edges, no
+      hierarchical peek into the controller's internals) standing in
+      for real flash until Phase 5 hardware exists. Found and fixed a
+      real bug: flash sends bytes in ascending address order (correct,
+      matches real hardware), but naively shift-assembling that into
+      a word gives big-endian byte order, while imem.v/dmem.v (and
+      the whole rest of this project) are little-endian - fixed with
+      an explicit byte-swap on the assembled result. SCK mirroring
+      clk (rather than a proper independent, slower SPI clock domain)
+      is a known simplification to revisit once a real chip's timing
+      limits are known at hardware bring-up. Quad/fast-read
+      optimization deferred - correctness first, matching the
+      project's established pattern. Files: `spi_flash_ctrl.v`,
+      `spi_flash_model.v`, `tb_spi_flash_ctrl.v`.)
+- [ ] XIP instruction-fetch path: program lives in flash, not BRAM —
+      **next task**
 - [ ] Direct-mapped instruction cache with stall-on-miss + line fill
 - [ ] **Cache line locking**: lock bit per line, plus a CSR or
       memory-mapped register to pin an address range
