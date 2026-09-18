@@ -174,10 +174,42 @@ locking or scratchpad memory for exactly this reason).
       hazard test program covering 0-gap and 1-gap ALU forwarding,
       0-gap store-data forwarding, and the load-use stall; files:
       `sw/pipeline_hazard_test.s`, `tb_cpu_pipeline_hazards.v`)
-- [ ] Real branch predictor (2-bit saturating counter, PC-indexed),
-      replacing the current "always predict not-taken" policy —
+- [x] Real branch predictor (2-bit saturating counter, PC-indexed,
+      64 entries), replacing the "always predict not-taken" policy
+      (pulled forward from Phase 4 into the pipeline work itself,
+      per user direction, rather than building a throwaway predict-
+      not-taken scheme first). Predicted at fetch (bht lookup using
+      pc[7:2], combined with a lightweight IF-stage pre-decode of
+      opcode/imm_b/imm_j - full decode is still ID's job, but the
+      predictor needs the branch's target before ID even runs);
+      resolved for real in EX, updating the counter toward the
+      actual outcome regardless of whether the prediction was right.
+      Also added a genuine, unscoped-for-later improvement while
+      building this: JAL's target is statically known from the
+      instruction alone, so it's now resolved at fetch with zero
+      penalty, not even treated as a "prediction" - only JALR (whose
+      target needs a register value not available until EX) and an
+      actual branch misprediction still trigger the late flush.
+      Verified quantitatively, not just for correctness: a 7-
+      execution loop (6 taken, 1 not-taken exit) produces exactly
+      2 flushes under the real predictor, versus 6 under the old
+      always-not-taken policy - checked via both the final learned
+      bht state and a direct flush-cycle count, in
+      tb_cpu_pipeline_predictor.v.
+
+      Found and fixed a genuine bug along the way (not a leftover
+      pre-existing issue): switching the flush condition to include
+      `ex_is_jalr` (derived from id_ex_opcode) exposed that
+      id_ex_opcode was never explicitly defined in the ID/EX
+      register's squash branch - harmless under the old design
+      (id_ex_jump was reliably 0 there and gated everything), but
+      under the new one this let 'x' permanently poison ex_flush
+      (and therefore pc_next) via Verilog's 4-state OR logic, where
+      x-OR-anything stays x. Fixed by explicitly defining
+      id_ex_opcode during squash. Files: `sw/pipeline_predictor_test.s`,
+      `tb_cpu_pipeline_predictor.v`, updated `cpu_pipeline.v`.
+- [ ] Generic stall mechanism (required later for cache-miss stalls) —
       **next task**
-- [ ] Generic stall mechanism (required later for cache-miss stalls)
 - [ ] Re-run the compliance suite against the pipelined core
 
 ### Phase 3 — Memory hierarchy (the thesis)
