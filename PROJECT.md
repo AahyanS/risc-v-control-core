@@ -441,6 +441,43 @@ locking or scratchpad memory for exactly this reason).
       `sw/cycle_timing_test.s`, `tb_cycle_timing_cache.v`,
       `tb_cycle_timing_xip.v`.)
 
+**The real experiment: locking under competing traffic.** The
+cold/warm test above shows a cache's jitter in the absence of any
+contention - useful, but not the actual scenario locking is for. Built
+a second pair of programs (`sw/interference_unlocked_test.s` /
+`sw/interference_locked_test.s`) that call a "hot path" routine
+(`hot_loop`) repeatedly, timing each call, but call a second,
+unrelated routine (`interference`, placed exactly 256 bytes after
+`hot_loop` - guaranteed same cache index, different tag) in between
+every measured call, simulating a competing task or ISR touching the
+same cache slot. First pass through the measurement loop is an
+explicit warm-up, excluded from the stats - its own loop-control
+instructions live in never-yet-warmed cache lines, and that one-time
+cold-fetch cost is an artifact of the test harness, not of the thing
+under test (found and fixed as a real confound in the first version
+of this experiment, the same way the same-cycle lock race was found -
+the initial numbers looked wrong, so the actual cause was traced
+rather than explained away).
+
+Result, run against Configuration 2 (`tb_interference_unlocked.v`)
+and Configuration 3 (`tb_interference_locked.v`), same workload, same
+interference, only the lock differing:
+
+| | unlocked (Config 2) | locked (Config 3) |
+|---|---|---|
+| min | 531 cycles | 10 cycles |
+| max | 531 cycles | 10 cycles |
+
+Unlocked: every single call misses - interference evicts `hot_loop`
+every time, so min and max both land at the miss cost, uniformly bad.
+Locked: every single call hits - interference can't touch the
+protected line, so min and max both land at the hit cost, uniformly
+fast. A 53x speedup *and* zero jitter, from identical competing
+traffic, with only a lock bit differing - the project's thesis, not
+argued for but measured. Files: `sw/interference_unlocked_test.s`,
+`sw/interference_locked_test.s`, `tb_interference_unlocked.v`,
+`tb_interference_locked.v`.
+
 ### Phase 4 — Control application
 
 - [ ] Fixed-point PID in C/assembly: Q-format, saturating arithmetic,
