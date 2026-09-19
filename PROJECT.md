@@ -294,8 +294,57 @@ locking or scratchpad memory for exactly this reason).
       EX's comparison logic, independent of how IF fetches. Files:
       `cpu_pipeline_xip.v`, `tb_cpu_pipeline_xip.v`,
       `tb_cpu_pipeline_xip_hazards.v`, `tb_cpu_pipeline_xip_predictor.v`.)
-- [ ] Direct-mapped instruction cache with stall-on-miss + line fill —
-      **next task**
+- [x] Direct-mapped instruction cache with stall-on-miss + line fill
+      (`icache.v` - Configuration 2 of the core experiment: XIP from
+      flash, with a cache. 16 lines x 4 words (16 bytes) per line =
+      256 bytes total. Address breakdown: `addr[3:2]` word offset,
+      `addr[7:4]` line index, `addr[23:8]` tag.
+
+      Deliberately built as a drop-in replacement for
+      spi_flash_ctrl.v - same req/ready/rdata/busy interface, wrapping
+      spi_flash_ctrl.v internally rather than being wired in alongside
+      it. This meant cpu_pipeline_xip.v's entire IF state machine
+      (fetch_issued/pending_redirect/pc_next priority/if_id_accept)
+      could be reused completely unchanged in the new top-level file
+      (`cpu_pipeline_cache.v`) - only the module instantiation swaps
+      from spi_flash_ctrl to icache. Real interface constraint hit
+      during design (not a bug found after the fact): a cache hit
+      cannot answer combinationally in the same cycle as the request,
+      because fetch_issued's update logic (`if (flash_req)
+      fetch_issued<=1; else if (flash_ready) fetch_issued<=0;`) only
+      checks the flash_ready branch when flash_req is NOT also true
+      that same cycle - a same-cycle hit response would set
+      fetch_issued=1 and never clear it, deadlocking fetch forever.
+      Fixed by design: every hit takes exactly 1 cycle of latency
+      (register the hit, respond ready the following cycle), matching
+      the minimum latency spi_flash_ctrl.v already had.
+
+      On a miss, fills the whole line via 4 separate spi_flash_ctrl.v
+      transactions (word 0-3), then returns the specific word
+      requested once the line is fully populated - not yet using
+      flash's native continuous-read capability to fetch all 4 words
+      in one transaction (would cost ~320 cycles instead of ~512 for
+      a 16-byte line), deferred as a documented optimization, same
+      pattern as deferring quad-SPI earlier. Cache line locking is a
+      separate, later checklist item - no lock bit exists yet, to
+      avoid building unused control-plane structure ahead of the
+      mechanism that will actually drive it.
+
+      Verified two ways: (1) architectural correctness - reused all
+      three existing pipeline test programs (control-flow, hazards,
+      predictor) against cpu_pipeline_cache.v, all checks pass
+      including the predictor's exact flush count (still 2, confirming
+      the cache changes fetch latency only, not misprediction
+      behavior); (2) actual caching behavior, not just correctness - a
+      new white-box testbench (`tb_icache_behavior.v`) counts cache
+      requests vs. misses by peeking at icache_inst's internal state
+      directly, running the looping predictor test program for 5000
+      cycles: 1979 total fetch requests, only 2 misses, 1977 served as
+      hits - concrete proof the cache is actually caching, not just
+      passing through to flash every time. Files: `icache.v`,
+      `cpu_pipeline_cache.v`, `tb_cpu_pipeline_cache.v`,
+      `tb_cpu_pipeline_cache_hazards.v`,
+      `tb_cpu_pipeline_cache_predictor.v`, `tb_icache_behavior.v`.)
 - [ ] **Cache line locking**: lock bit per line, plus a CSR or
       memory-mapped register to pin an address range
 - [ ] Instrumentation: cycle counter, hit/miss counters, per-iteration
