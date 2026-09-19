@@ -480,8 +480,57 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
 
 ### Phase 4 — Control application
 
-- [ ] Fixed-point PID in C/assembly: Q-format, saturating arithmetic,
-      integral anti-windup
+- [x] Fixed-point PID in C/assembly: Q-format, saturating arithmetic,
+      integral anti-windup (`sw/pid.h`/`sw/pid.c`. Q16.16 format - a
+      32-bit signed int represents a real value scaled by 2^16.
+      Addition/subtraction work with plain integer +/- (same scale on
+      both sides); multiplication needs `q16_mul`, which widens to a
+      64-bit intermediate product before shifting right 16 to rescale
+      back down - multiplying two 2^16-scaled values leaves the raw
+      product scaled by 2^32, not 2^16.
+
+      This core has no hardware multiply (base RV32I). C's `*`
+      compiles to a call to libgcc's `__mulsi3`/`__muldi3`, which
+      don't link under this project's usual `-nostdlib` - confirmed
+      empirically (a minimal multiply test failed to link with
+      "undefined reference to `__mulsi3`" until `-lgcc` was added).
+      Chose to link libgcc rather than hand-write a multiply routine
+      (a real tradeoff discussed with the user first) - readable C for
+      the actual control algorithm, at the cost of the multiply itself
+      being a black box for now. `-lgcc` verified both to link AND to
+      produce correct results in simulation (12345*6789=83810205,
+      checked against cpu_pipeline.v) before building anything on top
+      of it.
+
+      Anti-windup via conditional integration: the integral is
+      tentatively updated every step, but only committed if doing so
+      wouldn't push an already-saturated output further past its
+      limit (checked by the sign of the error relative to which bound
+      was hit). Verified two ways, same pattern as the cache-locking
+      proof - not just "runs without crashing" but "the guard visibly
+      changes behavior": `sw/pid_test.c` races the real `pid_step`
+      against a deliberately naive variant with no anti-windup guard
+      (defined only in the test file, to demonstrate why the guard in
+      pid.c matters) against the identical saturating scenario
+      (setpoint far above a simulated plant's start, output artificially
+      capped so the plant can't reach it immediately). Result: guarded
+      integral settles at ~0.71 after 40 steps vs. naive's ~22.7 (32x
+      larger - real windup), and guarded overshoots the setpoint by
+      1.3% (101.3 vs. 100) vs. naive's 42% (142.3) - the guard isn't
+      just architecturally present, it measurably prevents the
+      textbook failure mode it exists for.
+
+      Found and fixed a real test-budget bug during verification,
+      same debugging pattern as the earlier hardware bugs this
+      project has hit: the first run showed all PID-loop results as
+      `x` even after raising the cycle budget 10x. Traced with a
+      live write-monitor testbench (every `ex_mem_mem_write` printed
+      as it happens) rather than continuing to guess - revealed each
+      PID step costs ~1450 cycles, almost entirely inside the software
+      64-bit multiply routines, not the PID logic itself. The original
+      6000-cycle budget was off by roughly 20x; fixed by budgeting
+      from the measured per-step cost instead of a guess. Files:
+      `sw/pid.h`, `sw/pid.c`, `sw/pid_test.c`, `tb_pid_test.v`.)
 - [ ] Quadrature encoder decoder peripheral
 - [ ] PWM output peripheral
 - [ ] Timer peripheral; optionally a real timer interrupt (M-mode CSRs +
