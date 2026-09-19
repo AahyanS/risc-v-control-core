@@ -250,9 +250,52 @@ locking or scratchpad memory for exactly this reason).
       optimization deferred - correctness first, matching the
       project's established pattern. Files: `spi_flash_ctrl.v`,
       `spi_flash_model.v`, `tb_spi_flash_ctrl.v`.)
-- [ ] XIP instruction-fetch path: program lives in flash, not BRAM —
+- [x] XIP instruction-fetch path: program lives in flash, not BRAM
+      (`cpu_pipeline_xip.v` - Configuration 1 of the core experiment:
+      XIP from flash, no cache. Built as a new file, not a rewrite -
+      cpu_pipeline.v stays intact as the BRAM-backed reference/
+      compliance-suite target. Only IF changes; everything from ID
+      onward is unchanged, since fetch timing is orthogonal to
+      instruction correctness.
+
+      IF now needs its own small state machine, since a flash fetch
+      takes ~128 cycles instead of 1: pc_curr only moves on the exact
+      cycle a fetch completes (flash_ready), frozen otherwise. Since
+      a flash transaction can't be aborted once started, a
+      misprediction/JALR flush discovered while a fetch is already
+      in flight gets latched (pending_redirect/pending_target) and
+      applied once that now-known-stale fetch finishes, discarding
+      its result instead of using it - real instructions and their
+      mispredictions don't stop happening just because fetch got
+      slow. load_use_hazard also gates accepting a freshly-completed
+      fetch into IF/ID, not just issuing a new one, for the (in
+      practice vanishingly rare, given fetch is ~128 cycles vs. the
+      pipeline's own ~5-cycle depth) case where it's still true right
+      when a fetch lands - the fallback there is just a wasted, safe
+      re-fetch, never an incorrect one.
+
+      Found and fixed a real priority-order bug: the pc_next mux
+      checked `fetch_issued` before `flash_ready`, but fetch_issued
+      is a register that still reads its OLD value (1) at the exact
+      moment flash_ready pulses - only clearing the cycle after. The
+      mux therefore always took the "frozen" branch and never reached
+      the "decide where to go" branch, permanently stalling pc_curr
+      at 0 after the very first fetch. Fixed by checking flash_ready
+      first.
+
+      Verified by reusing the existing pipeline test programs
+      (control-flow, hazards, predictor) against cpu_pipeline_xip.v +
+      spi_flash_model.v instead of BRAM - deliberately reused rather
+      than writing new ones, since they already exercise exactly the
+      interactions that matter here (flush-while-mid-fetch, load-use
+      timing, predictor training). All pass, including the predictor
+      test's exact flush count (still 2, unchanged from the BRAM
+      version) - confirming misprediction rate is governed purely by
+      EX's comparison logic, independent of how IF fetches. Files:
+      `cpu_pipeline_xip.v`, `tb_cpu_pipeline_xip.v`,
+      `tb_cpu_pipeline_xip_hazards.v`, `tb_cpu_pipeline_xip_predictor.v`.)
+- [ ] Direct-mapped instruction cache with stall-on-miss + line fill —
       **next task**
-- [ ] Direct-mapped instruction cache with stall-on-miss + line fill
 - [ ] **Cache line locking**: lock bit per line, plus a CSR or
       memory-mapped register to pin an address range
 - [ ] Instrumentation: cycle counter, hit/miss counters, per-iteration
