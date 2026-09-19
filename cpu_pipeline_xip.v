@@ -398,17 +398,43 @@ module cpu_pipeline_xip (
     end
 
     // ==================== MEM: Memory Access ====================
-    // Unchanged from cpu_pipeline.v - data memory stays on-chip BRAM;
-    // flash is read-mostly (writes need slow erase/program cycles),
-    // so only instruction fetch moves to flash.
+    // Data memory stays on-chip BRAM; flash is read-mostly (writes
+    // need slow erase/program cycles), so only instruction fetch moves
+    // to flash - unchanged from cpu_pipeline.v.
+    //
+    // ---- Instrumentation: free-running cycle counter ----
+    // Memory-mapped at 0xFFFFFF04 (well outside dmem's real 8KB range,
+    // same convention as the cache's lock register): a load reads the
+    // current count, a store to this address resets it to 0. Lets
+    // software time any code region (read, do work, read again,
+    // subtract) - the actual measurement primitive the whole
+    // three-configuration comparison this project is built around
+    // depends on. No hit/miss counters here - Configuration 1 has no
+    // cache to report on; those are added in cpu_pipeline_cache.v /
+    // cpu_pipeline_cache_locked.v instead.
+
+    localparam [31:0] MMIO_CYCLE_ADDR = 32'hFFFFFF04;
+
+    wire is_mmio_cycle_addr  = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
+    wire is_mmio_cycle_write = ex_mem_mem_write && is_mmio_cycle_addr;
+    wire dmem_write_en       = ex_mem_mem_write && !is_mmio_cycle_addr;
+
+    reg [31:0] cycle_count;
+    always @(posedge clk) begin
+        if (reset || is_mmio_cycle_write)
+            cycle_count <= 32'd0;
+        else
+            cycle_count <= cycle_count + 32'd1;
+    end
 
     wire [31:0] mem_dmem_read_data;
+    wire [31:0] mem_read_data_muxed = is_mmio_cycle_addr ? cycle_count : mem_dmem_read_data;
 
     dmem dmem_inst (
         .clk(clk),
         .addr(ex_mem_alu_result),
         .write_data(ex_mem_rs2_data),
-        .mem_write(ex_mem_mem_write),
+        .mem_write(dmem_write_en),
         .funct3(ex_mem_funct3),
         .read_data(mem_dmem_read_data)
     );
@@ -422,7 +448,7 @@ module cpu_pipeline_xip (
         if (reset) begin
             mem_wb_reg_write_r <= 1'b0;
         end else begin
-            mem_wb_dmem_read_data <= mem_dmem_read_data;
+            mem_wb_dmem_read_data <= mem_read_data_muxed;
             mem_wb_result         <= ex_mem_result;
             mem_wb_rd_r           <= ex_mem_rd;
             mem_wb_reg_write_r    <= ex_mem_reg_write;

@@ -76,6 +76,11 @@ module cpu_pipeline_cache_locked (
     wire        lock_set;
     wire [23:0] lock_addr;
 
+    // Instrumentation wiring, also driven from the MEM stage below.
+    wire        stats_reset;
+    wire [31:0] hit_count;
+    wire [31:0] miss_count;
+
     icache icache_inst (
         .clk(clk),
         .reset(reset),
@@ -87,6 +92,9 @@ module cpu_pipeline_cache_locked (
         .lock_cmd(lock_cmd),
         .lock_set(lock_set),
         .lock_addr(lock_addr),
+        .hit_count(hit_count),
+        .miss_count(miss_count),
+        .stats_reset(stats_reset),
         .sck(sck),
         .cs_n(cs_n),
         .mosi(mosi),
@@ -365,19 +373,51 @@ module cpu_pipeline_cache_locked (
     end
 
     // ==================== MEM: Memory Access ====================
-    // Data memory stays on-chip BRAM, as before - EXCEPT a store to
-    // MMIO_LOCK_ADDR is diverted to the cache's lock control instead
-    // of ever reaching dmem, so it can't be misread as - or overwrite
-    // - real data at whatever address the array happened to alias to.
+    // Data memory stays on-chip BRAM, as before - EXCEPT loads/stores
+    // to four reserved memory-mapped addresses are diverted away from
+    // dmem entirely, so they can't be misread as - or overwrite - real
+    // data at whatever address the array happened to alias to:
+    //   0xFFFFFF00 - cache lock control (write-only; see icache.v)
+    //   0xFFFFFF04 - cycle counter (free-running; store resets to 0)
+    //   0xFFFFFF08 - cache hit count
+    //   0xFFFFFF0C - cache miss count (fills AND locked-line bypasses
+    //                both count as a miss - both left the 1-cycle hit
+    //                path)
+    // A store to either counter address resets BOTH hit and miss
+    // together, since they're only meaningful as a pair.
+
+    localparam [31:0] MMIO_CYCLE_ADDR = 32'hFFFFFF04;
+    localparam [31:0] MMIO_HIT_ADDR   = 32'hFFFFFF08;
+    localparam [31:0] MMIO_MISS_ADDR  = 32'hFFFFFF0C;
 
     wire is_mmio_lock_write = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
-    wire dmem_write_en      = ex_mem_mem_write && !is_mmio_lock_write;
+    wire is_mmio_cycle_addr = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
+    wire is_mmio_hit_addr   = (ex_mem_alu_result == MMIO_HIT_ADDR);
+    wire is_mmio_miss_addr  = (ex_mem_alu_result == MMIO_MISS_ADDR);
+    wire is_mmio_addr       = is_mmio_lock_write || is_mmio_cycle_addr ||
+                               is_mmio_hit_addr || is_mmio_miss_addr;
 
-    assign lock_cmd  = is_mmio_lock_write;
-    assign lock_set  = ex_mem_rs2_data[31];
-    assign lock_addr = ex_mem_rs2_data[23:0];
+    wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
+
+    assign lock_cmd    = is_mmio_lock_write;
+    assign lock_set    = ex_mem_rs2_data[31];
+    assign lock_addr   = ex_mem_rs2_data[23:0];
+    assign stats_reset = ex_mem_mem_write && (is_mmio_hit_addr || is_mmio_miss_addr);
+
+    reg [31:0] cycle_count;
+    always @(posedge clk) begin
+        if (reset || (ex_mem_mem_write && is_mmio_cycle_addr))
+            cycle_count <= 32'd0;
+        else
+            cycle_count <= cycle_count + 32'd1;
+    end
 
     wire [31:0] mem_dmem_read_data;
+    wire [31:0] mem_read_data_muxed =
+        is_mmio_cycle_addr ? cycle_count :
+        is_mmio_hit_addr   ? hit_count :
+        is_mmio_miss_addr  ? miss_count :
+                             mem_dmem_read_data;
 
     dmem dmem_inst (
         .clk(clk),
@@ -397,7 +437,7 @@ module cpu_pipeline_cache_locked (
         if (reset) begin
             mem_wb_reg_write_r <= 1'b0;
         end else begin
-            mem_wb_dmem_read_data <= mem_dmem_read_data;
+            mem_wb_dmem_read_data <= mem_read_data_muxed;
             mem_wb_result         <= ex_mem_result;
             mem_wb_rd_r           <= ex_mem_rd;
             mem_wb_reg_write_r    <= ex_mem_reg_write;

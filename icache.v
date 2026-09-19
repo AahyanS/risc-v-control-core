@@ -66,6 +66,14 @@ module icache (
     input         lock_set,   // 1 = lock, 0 = unlock
     input  [23:0] lock_addr,  // any address inside the target line
 
+    // Instrumentation: running totals, readable/resettable from the
+    // CPU level via memory-mapped registers - see cpu_pipeline_cache.v
+    // / cpu_pipeline_cache_locked.v. A "miss" here counts both normal
+    // fills and locked-line bypasses - both left the 1-cycle hit path.
+    output reg [31:0] hit_count,
+    output reg [31:0] miss_count,
+    input             stats_reset,
+
     output sck,
     output cs_n,
     output mosi,
@@ -223,6 +231,23 @@ module icache (
 
                 default: state <= ST_IDLE;
             endcase
+        end
+    end
+
+    // ---- Instrumentation: hit/miss totals ----
+    // Kept in its own always block, separate from the FSM above, so
+    // stats_reset can zero the counters without touching state/cache
+    // contents. Counts each ST_IDLE request exactly once, at the same
+    // point the FSM itself decides hit vs. everything-else.
+    always @(posedge clk) begin
+        if (reset || stats_reset) begin
+            hit_count  <= 32'd0;
+            miss_count <= 32'd0;
+        end else if (state == ST_IDLE && req) begin
+            if (req_hit)
+                hit_count <= hit_count + 32'd1;
+            else
+                miss_count <= miss_count + 32'd1;
         end
     end
 

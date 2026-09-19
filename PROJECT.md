@@ -402,8 +402,44 @@ locking or scratchpad memory for exactly this reason).
       `tb_cpu_pipeline_cache_locked.v`,
       `tb_cpu_pipeline_cache_locked_hazards.v`,
       `tb_cpu_pipeline_cache_locked_predictor.v`.)
-- [ ] Instrumentation: cycle counter, hit/miss counters, per-iteration
-      min/mean/max timing capture
+- [x] Instrumentation: cycle counter, hit/miss counters, per-iteration
+      min/mean/max timing capture (memory-mapped registers, same
+      convention as the lock register: 0xFFFFFF04 = free-running
+      cycle counter (load reads current count, store resets to 0),
+      0xFFFFFF08/0xFFFFFF0C = cache hit/miss counts on the two
+      cache-enabled configs (a store to either resets both together,
+      since they're only meaningful as a pair). Configuration 1 (no
+      cache) gets the cycle counter only - added directly to
+      `cpu_pipeline_xip.v`/`cpu_pipeline_cache.v`/
+      `cpu_pipeline_cache_locked.v` rather than yet more file variants,
+      since this is purely additive instrumentation, not a new
+      configuration - all prior regression tests (13 across the three
+      files) re-verified passing afterward to confirm nothing broke.
+      `icache.v` tracks hit_count/miss_count internally (a miss counts
+      both normal fills and locked-line bypasses - both left the
+      1-cycle hit path) with a stats_reset input, in a separate always
+      block from the main FSM so resetting stats never touches cache
+      state.
+
+      This is the piece that turns the three configurations from
+      "architecturally different" into "quantitatively comparable" -
+      the whole point of the project. Demonstrated with a real
+      program (`sw/cycle_timing_test.s`): times 5 iterations of a
+      tiny loop body via the cycle counter, tracking min/max/sum
+      (mean left as sum/N for whatever reads the result - base RV32I
+      has no hardware divide). Run against Configuration 2
+      (`tb_cycle_timing_cache.v`): min=8 cycles (warm hit), max=529
+      cycles (the first iteration's cold miss) - a ~66x spread inside
+      one program, one loop, just from cache state. Run against
+      Configuration 1 (`tb_cycle_timing_xip.v`, no cache at all):
+      min=max=520 cycles exactly, every iteration - slower on average
+      than the cache's best case, but with zero jitter. That contrast,
+      produced by actually running both configurations rather than
+      reasoned about abstractly, is the project's thesis in two
+      numbers. Files: `icache.v`, `cpu_pipeline_xip.v`,
+      `cpu_pipeline_cache.v`, `cpu_pipeline_cache_locked.v`,
+      `sw/cycle_timing_test.s`, `tb_cycle_timing_cache.v`,
+      `tb_cycle_timing_xip.v`.)
 
 ### Phase 4 — Control application
 
