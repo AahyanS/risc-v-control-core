@@ -28,6 +28,27 @@
 // deferred for the same reason quad-SPI/fast-read was: correctness
 // first, matching this project's established pattern), then answers
 // with the specific word originally requested.
+//
+// ---- Cache line locking ----
+// A lock bit per line, set/cleared by software via lock_cmd/lock_set/
+// lock_addr (driven from a memory-mapped store at the CPU level - see
+// cpu_pipeline_cache_locked.v). A locked line can never be evicted: on
+// a miss where the target line is locked, the cache does a BYPASS
+// fetch instead of a normal fill - it gets the single requested word
+// straight from flash without touching cache_data/valid/tag for that
+// line at all. This is the real, unavoidable tradeoff of locking a
+// slot in a direct-mapped cache: any OTHER address that aliases to
+// that same line (shares addr[7:4]) becomes permanently uncacheable
+// for as long as the lock holds - there's no associativity to fall
+// back on. That's not a limitation of this implementation; it's the
+// actual hardware cost locking buys determinism with, which is the
+// whole point of this project.
+//
+// Locking assumes software already warmed the target line (fetched it
+// at least once) before issuing the lock command - the command only
+// sets a bit, it doesn't force a fill. Locking code that was never
+// fetched is a software usage error, not something the hardware
+// guards against here.
 
 module icache (
     input         clk,
@@ -39,15 +60,22 @@ module icache (
     output reg [31:0] rdata,
     output        busy,
 
+    // Cache line locking control (driven from a memory-mapped store
+    // at the CPU level).
+    input         lock_cmd,   // pulse: apply a lock/unlock this cycle
+    input         lock_set,   // 1 = lock, 0 = unlock
+    input  [23:0] lock_addr,  // any address inside the target line
+
     output sck,
     output cs_n,
     output mosi,
     input  miso
 );
 
-    localparam ST_IDLE   = 2'd0;
-    localparam ST_FILL   = 2'd1;
-    localparam ST_RETURN = 2'd2;
+    localparam ST_IDLE    = 2'd0;
+    localparam ST_FILL    = 2'd1;
+    localparam ST_RETURN  = 2'd2;
+    localparam ST_BYPASS  = 2'd3;
 
     reg [1:0] state;
     assign busy = (state != ST_IDLE);
@@ -56,6 +84,7 @@ module icache (
     reg [31:0] cache_data [0:15][0:3];
     reg        valid      [0:15];
     reg [15:0] tag        [0:15];
+    reg        lock       [0:15];
 
     integer reset_i;
 
@@ -64,6 +93,19 @@ module icache (
     wire [3:0]  req_index       = addr[7:4];
     wire [15:0] req_tag         = addr[23:8];
     wire        req_hit         = valid[req_index] && (tag[req_index] == req_tag);
+
+    // Whether req_index is locked, including a lock command landing on
+    // THIS index in THIS very cycle. Needed because lock[] is only
+    // updated via non-blocking assignment below - a lock_cmd this
+    // cycle doesn't actually change lock[req_index]'s readable value
+    // until next cycle. Without this, a lock command arriving the same
+    // cycle as a conflicting miss on the line being locked would still
+    // see the old (unlocked) value and evict the line it was just
+    // asked to protect - a real race, not a hypothetical one (found by
+    // tracing tb_cache_lock_protection.v: the lock write and the
+    // aliasing fetch's miss landed in the exact same cycle).
+    wire req_index_locked = lock[req_index] ||
+        (lock_cmd && lock_set && (lock_addr[7:4] == req_index));
 
     // ---- Line-fill bookkeeping (only meaningful during ST_FILL/ST_RETURN) ----
     reg [1:0]  fill_word_idx;        // which word of the line we're on (0-3)
@@ -95,9 +137,20 @@ module icache (
 
         if (reset) begin
             state <= ST_IDLE;
-            for (reset_i = 0; reset_i < 16; reset_i = reset_i + 1)
+            for (reset_i = 0; reset_i < 16; reset_i = reset_i + 1) begin
                 valid[reset_i] <= 1'b0;
+                lock[reset_i]  <= 1'b0;
+            end
         end else begin
+            // Lock commands are just a bit set/clear - handled here,
+            // outside the state case, since they can land on any cycle
+            // regardless of fetch activity. The miss-routing decision
+            // below uses req_index_locked (not the raw lock[] read) so
+            // a lock landing the same cycle as a conflicting miss is
+            // still honored - see req_index_locked's comment above.
+            if (lock_cmd)
+                lock[lock_addr[7:4]] <= lock_set;
+
             case (state)
                 ST_IDLE: begin
                     if (req) begin
@@ -106,6 +159,14 @@ module icache (
                             ready <= 1'b1;
                             // stays in ST_IDLE - a hit is just this
                             // one cycle of latency, nothing to track
+                        end else if (req_index_locked) begin
+                            // Miss, but this slot is locked to
+                            // different code - can't evict it. Fetch
+                            // just the requested word directly,
+                            // bypassing the cache entirely.
+                            flash_addr_r <= addr;
+                            flash_req_r  <= 1'b1;
+                            state        <= ST_BYPASS;
                         end else begin
                             // Miss: start filling the whole line,
                             // starting at word 0 (offset bits cleared).
@@ -117,6 +178,14 @@ module icache (
                             flash_req_r           <= 1'b1;
                             state                 <= ST_FILL;
                         end
+                    end
+                end
+
+                ST_BYPASS: begin
+                    if (flash_ready) begin
+                        rdata <= flash_rdata;
+                        ready <= 1'b1;
+                        state <= ST_IDLE;
                     end
                 end
 

@@ -345,8 +345,63 @@ locking or scratchpad memory for exactly this reason).
       `cpu_pipeline_cache.v`, `tb_cpu_pipeline_cache.v`,
       `tb_cpu_pipeline_cache_hazards.v`,
       `tb_cpu_pipeline_cache_predictor.v`, `tb_icache_behavior.v`.)
-- [ ] **Cache line locking**: lock bit per line, plus a CSR or
-      memory-mapped register to pin an address range
+- [x] **Cache line locking**: lock bit per line, plus a CSR or
+      memory-mapped register to pin an address range (the actual
+      thesis of this project. `icache.v` gained a `lock` bit per line
+      alongside `valid`/`tag`, plus `lock_cmd`/`lock_set`/`lock_addr`
+      ports; `cpu_pipeline_cache_locked.v` (Configuration 3) intercepts
+      a `sw` to a reserved memory-mapped address (0xFFFFFF00 - well
+      outside dmem's real 8KB range) in the MEM stage before it can
+      reach dmem, and routes it to the cache's lock ports instead
+      (store value bit 31 = lock/unlock, bits 23:0 = an address inside
+      the target line). Software is expected to have already warmed
+      the target line (fetched it at least once) before locking - the
+      command only sets a bit, it doesn't force a fill.
+
+      On a miss where the target line is locked, the cache can't
+      evict it - instead it does a BYPASS fetch: get the single
+      requested word straight from flash without touching cache
+      storage at all. This is the real, concrete cost locking buys
+      determinism with: any other address that aliases to a locked
+      line (shares addr[7:4]) becomes permanently uncacheable for as
+      long as the lock holds, since a direct-mapped cache has no
+      associativity to fall back on.
+
+      Found and fixed a real same-cycle race, not a hypothetical one -
+      caught by tracing actual signal timing (per this project's
+      standing debugging approach) rather than by inspection: the
+      lock write and a conflicting miss on the exact same line landed
+      in the same cycle in the very first test run. Since
+      `lock[index] <= lock_set` is a non-blocking assignment, it
+      doesn't take effect until the next cycle - so the miss-routing
+      decision that same cycle read the stale (still-unlocked) value
+      and evicted the line it was being asked to protect, one cycle
+      before the lock would have caught it. Fixed with a combinational
+      `req_index_locked` that ORs the registered lock bit with "a lock
+      command landing on this exact index this exact cycle," so the
+      routing decision can never race the write that's supposed to
+      inform it.
+
+      Verified two ways: (1) regression - the three existing pipeline
+      test programs pass unchanged against
+      cpu_pipeline_cache_locked.v, confirming the new MMIO decode
+      doesn't disturb ordinary execution when the lock address is
+      never touched; (2) a dedicated test
+      (`sw/cache_lock_test.s` + `tb_cache_lock_protection.v`) that
+      warms a line, locks it, then deliberately executes code placed
+      exactly 256 bytes later (guaranteed same index, different tag,
+      by construction: 256 = 2^8 is exactly one unit in the tag field
+      while leaving the index field untouched) to try to evict it.
+      White-box checks confirm the locked line's tag/valid are
+      byte-for-byte unchanged after the conflicting access, and that
+      the conflicting access actually went through the bypass path
+      (30 bypass fetches observed, not silently ignored) - concrete
+      proof the protection is real, not just architecturally
+      invisible. Files: `icache.v`, `cpu_pipeline_cache_locked.v`,
+      `sw/cache_lock_test.s`, `tb_cache_lock_protection.v`,
+      `tb_cpu_pipeline_cache_locked.v`,
+      `tb_cpu_pipeline_cache_locked_hazards.v`,
+      `tb_cpu_pipeline_cache_locked_predictor.v`.)
 - [ ] Instrumentation: cycle counter, hit/miss counters, per-iteration
       min/mean/max timing capture
 
