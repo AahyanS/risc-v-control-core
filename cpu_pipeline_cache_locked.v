@@ -24,6 +24,16 @@
 // Everything else - IF's fetch state machine, ID/EX/MEM/WB, forwarding,
 // load-use stall, the branch predictor - is unchanged from
 // cpu_pipeline_cache.v / cpu_pipeline_xip.v / cpu_pipeline.v.
+//
+// ---- Quadrature encoder decoder (Phase 4) ----
+// quad_decoder.v runs continuously off enc_a/enc_b regardless of CPU
+// activity - see that file's header for why. Its position count is
+// readable at 0xFFFFFF10 (store resets to 0); its diagnostic
+// invalid-transition count at 0xFFFFFF14 (read-only - there's nothing
+// meaningful to reset it to independent of position). Only wired into
+// this configuration, not the plain XIP/cache ones - those exist
+// specifically for the cache-latency comparison experiment, not for
+// building the real control system on top of.
 
 module cpu_pipeline_cache_locked (
     input clk,
@@ -33,10 +43,30 @@ module cpu_pipeline_cache_locked (
     output sck,
     output cs_n,
     output mosi,
-    input  miso
+    input  miso,
+
+    // Quadrature encoder inputs (real or simulated)
+    input enc_a,
+    input enc_b
 );
 
-    localparam [31:0] MMIO_LOCK_ADDR = 32'hFFFFFF00;
+    localparam [31:0] MMIO_LOCK_ADDR  = 32'hFFFFFF00;
+    localparam [31:0] MMIO_ENC_POS_ADDR = 32'hFFFFFF10;
+    localparam [31:0] MMIO_ENC_ERR_ADDR = 32'hFFFFFF14;
+
+    wire signed [31:0] enc_position;
+    wire        [31:0] enc_error_count;
+    wire               enc_position_clear;   // driven from the MEM stage below
+
+    quad_decoder quad_decoder_inst (
+        .clk(clk),
+        .reset(reset),
+        .a(enc_a),
+        .b(enc_b),
+        .clear_position(enc_position_clear),
+        .position(enc_position),
+        .error_count(enc_error_count)
+    );
 
     // ==================== IF: Instruction Fetch (XIP + cache) ====================
 
@@ -374,7 +404,7 @@ module cpu_pipeline_cache_locked (
 
     // ==================== MEM: Memory Access ====================
     // Data memory stays on-chip BRAM, as before - EXCEPT loads/stores
-    // to four reserved memory-mapped addresses are diverted away from
+    // to six reserved memory-mapped addresses are diverted away from
     // dmem entirely, so they can't be misread as - or overwrite - real
     // data at whatever address the array happened to alias to:
     //   0xFFFFFF00 - cache lock control (write-only; see icache.v)
@@ -383,6 +413,12 @@ module cpu_pipeline_cache_locked (
     //   0xFFFFFF0C - cache miss count (fills AND locked-line bypasses
     //                both count as a miss - both left the 1-cycle hit
     //                path)
+    //   0xFFFFFF10 - encoder position (store resets to 0 - see
+    //                quad_decoder.v for why this only clears the
+    //                count, not the decoder's tracked a/b state)
+    //   0xFFFFFF14 - encoder invalid-transition count (read-only
+    //                diagnostic - nothing meaningful to reset it to
+    //                independent of position)
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -390,19 +426,23 @@ module cpu_pipeline_cache_locked (
     localparam [31:0] MMIO_HIT_ADDR   = 32'hFFFFFF08;
     localparam [31:0] MMIO_MISS_ADDR  = 32'hFFFFFF0C;
 
-    wire is_mmio_lock_write = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
-    wire is_mmio_cycle_addr = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
-    wire is_mmio_hit_addr   = (ex_mem_alu_result == MMIO_HIT_ADDR);
-    wire is_mmio_miss_addr  = (ex_mem_alu_result == MMIO_MISS_ADDR);
-    wire is_mmio_addr       = is_mmio_lock_write || is_mmio_cycle_addr ||
-                               is_mmio_hit_addr || is_mmio_miss_addr;
+    wire is_mmio_lock_write   = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
+    wire is_mmio_cycle_addr   = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
+    wire is_mmio_hit_addr     = (ex_mem_alu_result == MMIO_HIT_ADDR);
+    wire is_mmio_miss_addr    = (ex_mem_alu_result == MMIO_MISS_ADDR);
+    wire is_mmio_enc_pos_addr = (ex_mem_alu_result == MMIO_ENC_POS_ADDR);
+    wire is_mmio_enc_err_addr = (ex_mem_alu_result == MMIO_ENC_ERR_ADDR);
+    wire is_mmio_addr         = is_mmio_lock_write || is_mmio_cycle_addr ||
+                                 is_mmio_hit_addr || is_mmio_miss_addr ||
+                                 is_mmio_enc_pos_addr || is_mmio_enc_err_addr;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
-    assign lock_cmd    = is_mmio_lock_write;
-    assign lock_set    = ex_mem_rs2_data[31];
-    assign lock_addr   = ex_mem_rs2_data[23:0];
-    assign stats_reset = ex_mem_mem_write && (is_mmio_hit_addr || is_mmio_miss_addr);
+    assign lock_cmd          = is_mmio_lock_write;
+    assign lock_set          = ex_mem_rs2_data[31];
+    assign lock_addr         = ex_mem_rs2_data[23:0];
+    assign stats_reset       = ex_mem_mem_write && (is_mmio_hit_addr || is_mmio_miss_addr);
+    assign enc_position_clear = ex_mem_mem_write && is_mmio_enc_pos_addr;
 
     reg [31:0] cycle_count;
     always @(posedge clk) begin
@@ -414,10 +454,12 @@ module cpu_pipeline_cache_locked (
 
     wire [31:0] mem_dmem_read_data;
     wire [31:0] mem_read_data_muxed =
-        is_mmio_cycle_addr ? cycle_count :
-        is_mmio_hit_addr   ? hit_count :
-        is_mmio_miss_addr  ? miss_count :
-                             mem_dmem_read_data;
+        is_mmio_cycle_addr   ? cycle_count :
+        is_mmio_hit_addr     ? hit_count :
+        is_mmio_miss_addr    ? miss_count :
+        is_mmio_enc_pos_addr ? enc_position :
+        is_mmio_enc_err_addr ? enc_error_count :
+                               mem_dmem_read_data;
 
     dmem dmem_inst (
         .clk(clk),

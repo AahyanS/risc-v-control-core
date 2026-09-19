@@ -531,7 +531,57 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
       6000-cycle budget was off by roughly 20x; fixed by budgeting
       from the measured per-step cost instead of a guess. Files:
       `sw/pid.h`, `sw/pid.c`, `sw/pid_test.c`, `tb_pid_test.v`.)
-- [ ] Quadrature encoder decoder peripheral
+- [x] Quadrature encoder decoder peripheral (`quad_decoder.v`. Two
+      channels 90 degrees out of phase; decodes every transition
+      (4x decoding - 4 counts per physical encoder line) by comparing
+      each cycle's 2-bit `{a,b}` state to the previous cycle's via a
+      transition table, rather than just edge-triggering on one
+      channel. Runs continuously off the raw pins every clock cycle
+      regardless of CPU activity - the same determinism argument as
+      cache locking, applied to a different subsystem: a
+      software-polled decoder would be exactly as vulnerable to
+      CPU-side jitter as anything else running on the CPU, so this
+      sidesteps the problem by not depending on CPU timing at all.
+      `a`/`b` are external, asynchronous signals - passed through a
+      2-flop synchronizer before use, standard practice for any signal
+      crossing into this clock domain from outside the chip. Also
+      tracks an invalid-transition count (double-bit-flip in one
+      cycle - not physically possible for a real encoder at this
+      clock rate, so it means a glitch or a missed sample) as a
+      diagnostic, separate from position.
+
+      Wired into `cpu_pipeline_cache_locked.v` only (not the plain
+      XIP/cache configs, which exist for the cache-latency comparison
+      experiment specifically, not for building the real control
+      system on top of) - `enc_a`/`enc_b` exposed as top-level ports,
+      position readable at 0xFFFFFF10 (store resets to 0), error count
+      at 0xFFFFFF14 (read-only). Deliberately gave the position-clear
+      its own dedicated `clear_position` input on `quad_decoder.v`
+      rather than folding it into the module's main `reset` - caught
+      during design, not after: resetting the whole module (including
+      `prev_state` and the synchronizer) on every software-issued
+      clear would lose track of the actual current a/b state, and the
+      next real transition afterward could be misread as a spurious
+      move or even flagged as a glitch, purely because decoding
+      restarted from an assumed `00` that might not match reality.
+
+      Verified two ways: a white-box testbench
+      (`tb_quad_decoder.v`) drives real quadrature sequences directly
+      at the module (forward rotation, reverse rotation, a direction
+      reversal mid-stream, an idle period, and a deliberately illegal
+      double transition) and checks position/error_count against
+      hand-computed expected values at each stage - all passed on the
+      first attempt, no bugs found. A second, end-to-end test
+      (`sw/encoder_test.s` + `tb_encoder_test.v`) drives the same kind
+      of transitions on the CPU's actual `enc_a`/`enc_b` pins (not a
+      hierarchical peek into the decoder) and confirms software
+      itself reads the correct position back via MMIO, then clears it
+      via a store and confirms that too - proving the full path, not
+      just the decoder in isolation. All 5 pre-existing Configuration
+      3 regression tests re-verified passing after adding the module,
+      confirming the integration didn't disturb anything. Files:
+      `quad_decoder.v`, `tb_quad_decoder.v`, `sw/encoder_test.s`,
+      `tb_encoder_test.v`, `cpu_pipeline_cache_locked.v`.)
 - [ ] PWM output peripheral
 - [ ] Timer peripheral; optionally a real timer interrupt (M-mode CSRs +
       trap entry) so "deadline miss" becomes directly measurable
