@@ -582,7 +582,39 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
       confirming the integration didn't disturb anything. Files:
       `quad_decoder.v`, `tb_quad_decoder.v`, `sw/encoder_test.s`,
       `tb_encoder_test.v`, `cpu_pipeline_cache_locked.v`.)
-- [ ] PWM output peripheral
+- [x] PWM output peripheral (`pwm.v` - the actuator-side counterpart
+      to `quad_decoder.v`'s sensor side. A free-running counter cycles
+      0..PERIOD-1; output is high while counter < duty_cycle, the
+      standard compare-against-threshold PWM generator. PERIOD is a
+      module parameter (default 1024), not runtime-configurable -
+      fixed switching frequency, only duty cycle varies at runtime;
+      matching a real target PWM frequency in kHz is a Phase 5
+      concern once real motor driver hardware exists. duty_cycle >=
+      PERIOD saturates to 100% (counter < duty_cycle is always true
+      across the full 0..PERIOD-1 range); 0 already means 0% with no
+      clamping needed on that side. Runs continuously off clk once
+      duty_cycle is set, without the CPU needing to service it every
+      period - same pattern as the encoder.
+
+      Wired into `cpu_pipeline_cache_locked.v` only, same reasoning as
+      the encoder - `pwm_out` exposed as a top-level port, duty_cycle
+      read/write at 0xFFFFFF18.
+
+      Verified two ways, both passing on the first attempt (no bugs
+      found this round): a white-box test (`tb_pwm.v`) measures the
+      ACTUAL fraction of cycles `pwm_out` is high over a full period at
+      several duty cycle settings (0%, 25%, 50%, 100%, saturating
+      above 100%, and the minimum nonzero value) - not just "it
+      toggles," but that the measured duty cycle matches what was
+      programmed. An end-to-end test (`sw/pwm_test.s` +
+      `tb_pwm_test.v`) has software set duty_cycle=256 (25% of 1024)
+      via MMIO, reads it back, then the testbench observes the CPU's
+      actual physical `pwm_out` pin over one full period and confirms
+      exactly 256/1024 cycles measured high - the full path, not just
+      the register holding the value. All 6 pre-existing Configuration
+      3 regression tests re-verified passing after adding the module.
+      Files: `pwm.v`, `tb_pwm.v`, `sw/pwm_test.s`, `tb_pwm_test.v`,
+      `cpu_pipeline_cache_locked.v`.)
 - [ ] Timer peripheral; optionally a real timer interrupt (M-mode CSRs +
       trap entry) so "deadline miss" becomes directly measurable
 - [ ] Custom PID-MAC instruction (see below)

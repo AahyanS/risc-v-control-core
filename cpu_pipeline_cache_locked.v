@@ -30,10 +30,17 @@
 // activity - see that file's header for why. Its position count is
 // readable at 0xFFFFFF10 (store resets to 0); its diagnostic
 // invalid-transition count at 0xFFFFFF14 (read-only - there's nothing
-// meaningful to reset it to independent of position). Only wired into
-// this configuration, not the plain XIP/cache ones - those exist
-// specifically for the cache-latency comparison experiment, not for
-// building the real control system on top of.
+// meaningful to reset it to independent of position).
+//
+// ---- PWM output (Phase 4) ----
+// pwm.v is the actuator-side counterpart - also runs continuously off
+// clk once duty_cycle is set, without needing the CPU to service it
+// every period. duty_cycle is read/write at 0xFFFFFF18 (write sets
+// it, read returns the last value written).
+//
+// Neither peripheral is wired into the plain XIP/cache configs - those
+// exist specifically for the cache-latency comparison experiment, not
+// for building the real control system on top of.
 
 module cpu_pipeline_cache_locked (
     input clk,
@@ -47,12 +54,16 @@ module cpu_pipeline_cache_locked (
 
     // Quadrature encoder inputs (real or simulated)
     input enc_a,
-    input enc_b
+    input enc_b,
+
+    // PWM output (to a real or simulated motor driver)
+    output pwm_out
 );
 
-    localparam [31:0] MMIO_LOCK_ADDR  = 32'hFFFFFF00;
+    localparam [31:0] MMIO_LOCK_ADDR    = 32'hFFFFFF00;
     localparam [31:0] MMIO_ENC_POS_ADDR = 32'hFFFFFF10;
     localparam [31:0] MMIO_ENC_ERR_ADDR = 32'hFFFFFF14;
+    localparam [31:0] MMIO_PWM_ADDR     = 32'hFFFFFF18;
 
     wire signed [31:0] enc_position;
     wire        [31:0] enc_error_count;
@@ -66,6 +77,15 @@ module cpu_pipeline_cache_locked (
         .clear_position(enc_position_clear),
         .position(enc_position),
         .error_count(enc_error_count)
+    );
+
+    reg [31:0] pwm_duty_cycle;   // written from the MEM stage below
+
+    pwm pwm_inst (
+        .clk(clk),
+        .reset(reset),
+        .duty_cycle(pwm_duty_cycle),
+        .pwm_out(pwm_out)
     );
 
     // ==================== IF: Instruction Fetch (XIP + cache) ====================
@@ -419,6 +439,8 @@ module cpu_pipeline_cache_locked (
     //   0xFFFFFF14 - encoder invalid-transition count (read-only
     //                diagnostic - nothing meaningful to reset it to
     //                independent of position)
+    //   0xFFFFFF18 - PWM duty cycle (read/write - read returns the
+    //                last value written)
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -432,9 +454,11 @@ module cpu_pipeline_cache_locked (
     wire is_mmio_miss_addr    = (ex_mem_alu_result == MMIO_MISS_ADDR);
     wire is_mmio_enc_pos_addr = (ex_mem_alu_result == MMIO_ENC_POS_ADDR);
     wire is_mmio_enc_err_addr = (ex_mem_alu_result == MMIO_ENC_ERR_ADDR);
+    wire is_mmio_pwm_addr     = (ex_mem_alu_result == MMIO_PWM_ADDR);
     wire is_mmio_addr         = is_mmio_lock_write || is_mmio_cycle_addr ||
                                  is_mmio_hit_addr || is_mmio_miss_addr ||
-                                 is_mmio_enc_pos_addr || is_mmio_enc_err_addr;
+                                 is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
+                                 is_mmio_pwm_addr;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -452,6 +476,13 @@ module cpu_pipeline_cache_locked (
             cycle_count <= cycle_count + 32'd1;
     end
 
+    always @(posedge clk) begin
+        if (reset)
+            pwm_duty_cycle <= 32'd0;
+        else if (ex_mem_mem_write && is_mmio_pwm_addr)
+            pwm_duty_cycle <= ex_mem_rs2_data;
+    end
+
     wire [31:0] mem_dmem_read_data;
     wire [31:0] mem_read_data_muxed =
         is_mmio_cycle_addr   ? cycle_count :
@@ -459,6 +490,7 @@ module cpu_pipeline_cache_locked (
         is_mmio_miss_addr    ? miss_count :
         is_mmio_enc_pos_addr ? enc_position :
         is_mmio_enc_err_addr ? enc_error_count :
+        is_mmio_pwm_addr     ? pwm_duty_cycle :
                                mem_dmem_read_data;
 
     dmem dmem_inst (
