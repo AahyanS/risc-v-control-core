@@ -615,8 +615,98 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
       3 regression tests re-verified passing after adding the module.
       Files: `pwm.v`, `tb_pwm.v`, `sw/pwm_test.s`, `tb_pwm_test.v`,
       `cpu_pipeline_cache_locked.v`.)
-- [ ] Timer peripheral; optionally a real timer interrupt (M-mode CSRs +
-      trap entry) so "deadline miss" becomes directly measurable
+- [x] Timer peripheral with a real M-mode timer interrupt (CSRs + trap
+      entry) - the biggest single architecture addition in this
+      project. `timer.v`: a free-running periodic counter; fires
+      (raises `pending`, reloads to 0) when count reaches a
+      software-set compare value, acknowledged via a dedicated
+      `clear_pending` input. Deliberately deviates from real CLINT
+      convention (which clears a pending timer interrupt by rewriting
+      mtimecmp, not via a separate ack register) - simpler to reason
+      about and use from an ISR, at the cost of not matching real
+      hardware exactly, a documented simplification like several
+      others in this project. New-match-vs-held-ack same-cycle race
+      resolved in the new match's favor - silently losing a real
+      interrupt event to a same-cycle acknowledgment would be worse
+      than occasionally requiring software to notice `pending` is
+      still set.
+
+      CSR infrastructure (`control.v` + `cpu_pipeline_cache_locked.v`):
+      a genuinely minimal but real M-mode subset - `mstatus` (bit 3 =
+      MIE, bit 7 = MPIE only), `mie` (bit 7 = MTIE only, since the
+      timer is the only interrupt source this core has), `mtvec`
+      (direct mode only), `mepc`, `mcause`. `mip` is deliberately NOT
+      a stored register - it's the live, read-only reflection of
+      `timer.pending` (bit 7 = MTIP), matching how real hardware's
+      mip.MTIP actually works. Two new instructions: `CSRRW`/`CSRRS`
+      (the two idioms that cover setup and ISR read/write; `CSRRC`
+      and the immediate-operand CSR variants aren't needed by anything
+      this project writes, deferred) and `MRET`, decoded directly from
+      raw instruction bits in the CPU file rather than in `control.v`
+      (needs the full funct12, which `control.v` doesn't see - same
+      pattern as immediate assembly already living outside `control.v`).
+      CSR reads and writes both happen in the EX stage (unlike the
+      register file, which reads in ID but writes in WB), so no
+      forwarding path is needed for back-to-back CSR
+      write-then-read - the write lands on the clock edge a cycle
+      before the next read needs it.
+
+      Trap injection deliberately reuses the pipeline's EXISTING
+      `ex_flush` mechanism (the same one JALR/mispredicted branches
+      already use) rather than a new one - lower risk than inventing a
+      parallel path. Gated on `id_ex_valid` (not "is EX holding a real
+      instruction," which turned out to be the wrong question - see
+      below) so `mepc` is always meaningful. Unlike JALR/branches
+      (which complete normally even when younger instructions get
+      squashed), an interrupted instruction's OWN effects (register
+      write, memory write, CSR write) are suppressed for that cycle
+      too - it hasn't "happened" from the interrupted program's
+      perspective; it re-executes from scratch after MRET returns to
+      mepc.
+
+      Found and fixed two real bugs during verification, both via
+      signal tracing rather than continued abstract reasoning (the
+      established debugging pattern throughout this project):
+
+      1. The pipeline's bubble-insertion NOP (`32'h00000013`) is
+         bit-identical to a real `addi x0,x0,0` - so gating trap
+         injection on "opcode isn't the artificially-zeroed squash
+         value" (the initial approach) didn't actually detect
+         pipeline-inserted bubbles, only explicitly-squashed ones.
+         A bubble inserted by MRET's own flush could itself look like
+         a valid instruction with a stale PC, and get mistaken for a
+         trap point - caught because a live trace showed `mepc`
+         pointing into the middle of the handler itself, not
+         somewhere in the main program. Fixed with a dedicated
+         `valid` bit tracked through IF/ID and ID/EX (set only when a
+         genuine fetch was latched), not an opcode heuristic - the
+         only way to actually distinguish a real instruction from a
+         bit-identical inserted bubble.
+      2. A test-level "off by one" (handler ran 6 times instead of the
+         expected 5) turned out to be a genuine, correct race between
+         the asynchronous ISR incrementing a counter and the main
+         loop's simple polling check on that counter, not a hardware
+         bug - confirmed by tracing the counter's value at every
+         single interrupt (strictly monotonic, zero corruption, `mepc`
+         correctly stabilizing once the loop exits) before concluding
+         it was a test assertion that was too strict, not a defect to
+         chase.
+
+      Verified end-to-end (`sw/interrupt_test.s` + `tb_interrupt_test.v`):
+      configures mtvec/mie/mstatus and a timer compare value in
+      software, then spins doing background work while the timer
+      interrupts it periodically - confirms the handler actually ran
+      (not just once: proving resumption via MRET works repeatedly,
+      not just a single trap), and that the background counter kept
+      advancing throughout (the main program wasn't derailed, just
+      briefly paused each time). All 7 pre-existing Configuration 3
+      regression tests, plus the full compliance suite on both cpu.v
+      and cpu_pipeline.v (40/40 each - `control.v` is shared
+      infrastructure, so a change there needed checking everywhere it's
+      used, not just the one file it was made for), re-verified passing
+      after this addition. Files: `timer.v`, `tb_timer.v`, `control.v`,
+      `cpu_pipeline_cache_locked.v`, `sw/interrupt_test.s`,
+      `tb_interrupt_test.v`.)
 - [ ] Custom PID-MAC instruction (see below)
 - [ ] Branch predictor + measurement (see below)
 

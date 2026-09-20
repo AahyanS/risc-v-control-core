@@ -14,6 +14,14 @@
 // Branch condition evaluation and the pc_next/write-back muxes live in
 // cpu.v, not here - this module only decodes "what kind of instruction
 // is this," not "was the branch taken."
+//
+// CSRRW/CSRRS (SYSTEM opcode) are decoded here like any other
+// instruction; MRET is NOT, since distinguishing it from ECALL/EBREAK
+// needs the raw immediate bits (rs2 field + funct7 combined into
+// funct12), which this module doesn't see (only funct7 alone) - kept
+// consistent with the existing pattern of raw-bit-pattern decisions
+// (immediate assembly, MRET's) living in the CPU top-level file, not
+// here.
 
 module control (
     input  [6:0] opcode,
@@ -28,7 +36,9 @@ module control (
     output reg       branch,
     output reg       jump,
     output reg       lui,
-    output reg       auipc
+    output reg       auipc,
+    output reg       is_csr,
+    output reg       csr_set_mode   // 0 = CSRRW (write rs1 verbatim), 1 = CSRRS (write old|rs1)
 );
 
     // Opcodes handled so far
@@ -41,6 +51,7 @@ module control (
     localparam OPCODE_JALR   = 7'b1100111;
     localparam OPCODE_LUI    = 7'b0110111;
     localparam OPCODE_AUIPC  = 7'b0010111;
+    localparam OPCODE_SYSTEM = 7'b1110011;
 
     // ALU op used for address calculation on every load/store/JALR:
     // rs1 + imm
@@ -66,6 +77,8 @@ module control (
         jump       = 1'b0;
         lui        = 1'b0;
         auipc      = 1'b0;
+        is_csr     = 1'b0;
+        csr_set_mode = 1'b0;
 
         case (opcode)
             OPCODE_R_TYPE: begin
@@ -153,6 +166,33 @@ module control (
             OPCODE_AUIPC: begin
                 reg_write = 1'b1; // rd = pc + imm_u, computed in cpu.v
                 auipc     = 1'b1;
+            end
+
+            OPCODE_SYSTEM: begin
+                // funct3==000 (ECALL/EBREAK/MRET/WFI) is deliberately
+                // NOT decoded here - MRET is picked out directly from
+                // the raw instruction bits in the CPU top-level file
+                // (see this file's header comment); ECALL/EBREAK/WFI
+                // aren't used by anything in this project (the
+                // compliance suite uses its own memory-mapped
+                // pass/fail harness, not ECALL) and fall through to
+                // the NOP-like defaults, same as any other
+                // unrecognized encoding.
+                case (funct3)
+                    3'b001: begin // CSRRW
+                        reg_write = 1'b1;
+                        is_csr    = 1'b1;
+                    end
+                    3'b010: begin // CSRRS
+                        reg_write    = 1'b1;
+                        is_csr       = 1'b1;
+                        csr_set_mode = 1'b1;
+                    end
+                    default: ; // CSRRC and the immediate-operand CSR
+                               // variants aren't needed by anything
+                               // this project writes - deferred, same
+                               // as other "simple subset first" calls
+                endcase
             end
 
             default: ; // unrecognized opcode: keep the NOP-like defaults above

@@ -207,28 +207,44 @@ module cpu_pipeline_cache_locked (
     wire if_id_accept = flash_ready && !pending_redirect && !ex_flush &&
                          !load_use_hazard;
 
-    // ---- IF/ID pipeline register (unchanged) ----
+    // ---- IF/ID pipeline register ----
+    // if_id_valid distinguishes a genuinely fetched instruction from a
+    // pipeline-inserted bubble - needed because the NOP encoding used
+    // for bubbles (32'h00000013) is bit-identical to a real `addi
+    // x0,x0,0`, so opcode alone can't tell them apart. This matters
+    // for interrupt injection (see trap_taken in the EX section
+    // below): without it, a bubble inserted by MRET's own flush could
+    // itself look like a "real" instruction with a stale PC, and get
+    // mistaken for a valid trap point - found exactly this way, by
+    // tracing a failing interrupt test rather than reasoning about it
+    // abstractly (mepc ended up pointing into the middle of the
+    // handler itself).
     reg [31:0] if_id_pc;
     reg [31:0] if_id_instr;
     reg        if_id_predicted_taken;
+    reg        if_id_valid;
 
     always @(posedge clk) begin
         if (reset) begin
             if_id_pc              <= 32'd0;
             if_id_instr           <= 32'h00000013; // NOP
             if_id_predicted_taken <= 1'b0;
+            if_id_valid           <= 1'b0;
         end else if (if_id_accept) begin
             if_id_pc              <= pc_curr;
             if_id_instr           <= if_instr;
             if_id_predicted_taken <= if_predict_taken;
+            if_id_valid           <= 1'b1;
         end else if (load_use_hazard && !flash_ready) begin
             if_id_pc              <= if_id_pc;
             if_id_instr           <= if_id_instr;
             if_id_predicted_taken <= if_id_predicted_taken;
+            if_id_valid           <= if_id_valid;   // still holding a real instruction, just stalled
         end else begin
             if_id_pc              <= pc_curr;
             if_id_instr           <= 32'h00000013;
             if_id_predicted_taken <= 1'b0;
+            if_id_valid           <= 1'b0;
         end
     end
 
@@ -258,6 +274,8 @@ module cpu_pipeline_cache_locked (
     wire       id_jump;
     wire       id_lui;
     wire       id_auipc;
+    wire       id_is_csr;
+    wire       id_csr_set_mode;
 
     control control_inst (
         .opcode(id_opcode),
@@ -272,8 +290,17 @@ module cpu_pipeline_cache_locked (
         .branch(id_branch),
         .jump(id_jump),
         .lui(id_lui),
-        .auipc(id_auipc)
+        .auipc(id_auipc),
+        .is_csr(id_is_csr),
+        .csr_set_mode(id_csr_set_mode)
     );
+
+    // MRET: decoded directly from the raw instruction bits rather than
+    // in control.v (see control.v's header comment) - funct12 (the
+    // rs2 field + funct7 combined) = 0x302, rs1=0, rd=0 distinguishes
+    // it from ECALL/EBREAK/WFI, which all share funct3=000 too.
+    wire id_is_mret = (id_opcode == 7'b1110011) && (id_funct3 == 3'b000) &&
+                       (if_id_instr[31:20] == 12'h302);
 
     wire [31:0] id_imm = id_imm_sel ? id_imm_s : id_imm_i;
 
@@ -308,6 +335,8 @@ module cpu_pipeline_cache_locked (
     reg        id_ex_alu_src, id_ex_reg_write, id_ex_mem_write,
                id_ex_mem_to_reg, id_ex_branch, id_ex_jump, id_ex_lui,
                id_ex_auipc, id_ex_predicted_taken;
+    reg        id_ex_is_csr, id_ex_csr_set_mode, id_ex_is_mret;
+    reg        id_ex_valid;
 
     always @(posedge clk) begin
         if (reset || ex_flush || load_use_hazard) begin
@@ -320,8 +349,12 @@ module cpu_pipeline_cache_locked (
             id_ex_lui        <= 1'b0;
             id_ex_auipc      <= 1'b0;
             id_ex_rd         <= 5'd0;
+            id_ex_is_csr     <= 1'b0;
+            id_ex_is_mret    <= 1'b0;
+            id_ex_valid      <= 1'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
+            id_ex_valid      <= if_id_valid;
             id_ex_opcode     <= id_opcode;
             id_ex_rd         <= id_rd;
             id_ex_rs1        <= id_rs1;
@@ -343,6 +376,9 @@ module cpu_pipeline_cache_locked (
             id_ex_lui        <= id_lui;
             id_ex_auipc      <= id_auipc;
             id_ex_predicted_taken <= if_id_predicted_taken;
+            id_ex_is_csr       <= id_is_csr;
+            id_ex_csr_set_mode <= id_csr_set_mode;
+            id_ex_is_mret      <= id_is_mret;
         end
     end
 
@@ -378,10 +414,119 @@ module cpu_pipeline_cache_locked (
 
     wire ex_branch_mispredicted = id_ex_branch & (ex_branch_taken != id_ex_predicted_taken);
 
-    assign ex_flush = ex_is_jalr | ex_branch_mispredicted;
-    assign ex_correct_target = ex_is_jalr    ? (ex_alu_result & ~32'd1) :
-                                ex_branch_taken ? (id_ex_pc + id_ex_imm_b) :
-                                                   (id_ex_pc + 32'd4);
+    // ---- CSR register file (Phase 4) ----
+    // Minimal M-mode subset: mstatus (bit 3 = MIE, bit 7 = MPIE - only
+    // these two fields implemented), mie (bit 7 = MTIE - only this
+    // source implemented, since the timer is the only interrupt
+    // source this core has), mtvec (direct mode only - no vectored
+    // mode), mepc, mcause. mip is NOT a stored register - it's the
+    // live, read-only reflection of timer_pending (bit 7 = MTIP),
+    // matching how real hardware's mip.MTIP works: software can't
+    // write it directly, only observe it and clear the underlying
+    // condition (here, via the timer's own clear_pending MMIO
+    // address - see the MEM section below).
+    //
+    // Reads and writes both happen in this same stage (unlike the
+    // register file, which reads in ID but writes in WB), so no
+    // forwarding path is needed for back-to-back CSR
+    // write-then-read - the write lands on the clock edge, so the verу
+    // next cycle's combinational read of the same register already
+    // sees the new value with no special-casing required.
+    reg [31:0] mstatus;
+    reg [31:0] mie;
+    reg [31:0] mtvec;
+    reg [31:0] mepc;
+    reg [31:0] mcause;
+
+    wire mstatus_mie = mstatus[3];
+    wire mie_mtie    = mie[7];
+
+    wire        timer_pending;   // driven by timer_inst, wired in the MEM section below
+    wire [31:0] mip_value = {24'd0, timer_pending, 7'd0};   // bit 7 = MTIP
+
+    // The low 12 bits of the I-type immediate are the raw instruction
+    // bits regardless of sign extension - reusing id_ex_imm avoids
+    // needing a separately-propagated csr_addr field through ID/EX.
+    wire [11:0] csr_addr = id_ex_imm[11:0];
+
+    wire [31:0] csr_read_value =
+        (csr_addr == 12'h300) ? mstatus :
+        (csr_addr == 12'h304) ? mie :
+        (csr_addr == 12'h305) ? mtvec :
+        (csr_addr == 12'h341) ? mepc :
+        (csr_addr == 12'h342) ? mcause :
+        (csr_addr == 12'h344) ? mip_value :
+                                 32'd0;
+
+    wire [31:0] csr_new_value = id_ex_csr_set_mode ? (csr_read_value | fwd_rs1_data) : fwd_rs1_data;
+
+    // Interrupt taken when globally enabled (mstatus.MIE), source
+    // enabled (mie.MTIE), pending (the timer's own signal), AND EX
+    // holds a real, non-bubble instruction - gated on id_ex_valid,
+    // not on id_ex_opcode being nonzero. id_ex_opcode alone isn't
+    // enough: the NOP encoding the pipeline inserts for bubbles
+    // (32'h00000013) is bit-identical to a real `addi x0,x0,0`, so a
+    // pipeline-inserted bubble decodes to a perfectly ordinary nonzero
+    // opcode - opcode can't tell a real instruction from a bubble.
+    // id_ex_valid can, since it's set only when if_id_accept actually
+    // latched a genuine fetch (see the IF/ID register above). Found
+    // this exact gap by tracing a failing test, not by inspection:
+    // without id_ex_valid, a bubble inserted by MRET's own flush could
+    // itself be mistaken for a valid trap point, with mepc left
+    // pointing at a stale, meaningless PC.
+    //
+    // Bounded consequence of waiting for a real instruction: if EX
+    // happens to be bubbling (e.g. mid-flash-fetch) when the timer
+    // fires, the trap is recognized up to one pipeline-fill later -
+    // small and bounded next to the multi-hundred-cycle flash
+    // latencies this system already operates under.
+    wire trap_taken = mstatus_mie && mie_mtie && timer_pending && id_ex_valid;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            mstatus <= 32'd0;
+            mie     <= 32'd0;
+            mtvec   <= 32'd0;
+            mepc    <= 32'd0;
+            mcause  <= 32'd0;
+        end else if (trap_taken) begin
+            // Takes priority over whatever's in EX this cycle -
+            // including if it happens to be MRET or a CSR write
+            // itself (see the EX/MEM register below for why that
+            // instruction's OTHER effects are also suppressed this
+            // cycle, not just here): from the interrupted program's
+            // perspective, that instruction hasn't executed yet: it
+            // will run again, from scratch, once MRET returns to
+            // mepc.
+            mepc       <= id_ex_pc;
+            mcause     <= 32'h8000_0007;   // machine timer interrupt
+            mstatus[7] <= mstatus[3];       // MPIE = old MIE
+            mstatus[3] <= 1'b0;             // disable interrupts in the handler
+        end else if (id_ex_is_mret) begin
+            mstatus[3] <= mstatus[7];   // MIE = old MPIE
+            mstatus[7] <= 1'b1;          // MPIE = 1, per spec
+        end else if (id_ex_is_csr) begin
+            case (csr_addr)
+                12'h300: begin
+                    mstatus[3] <= csr_new_value[3];
+                    mstatus[7] <= csr_new_value[7];
+                end
+                12'h304: mie[7] <= csr_new_value[7];
+                12'h305: mtvec  <= csr_new_value;
+                12'h341: mepc   <= csr_new_value;
+                12'h342: mcause <= csr_new_value;
+                default: ; // mip is read-only from software;
+                           // unrecognized addresses are ignored
+            endcase
+        end
+    end
+
+    assign ex_flush = ex_is_jalr | ex_branch_mispredicted | id_ex_is_mret | trap_taken;
+    assign ex_correct_target = trap_taken       ? mtvec :
+                                id_ex_is_mret    ? mepc :
+                                ex_is_jalr       ? (ex_alu_result & ~32'd1) :
+                                ex_branch_taken  ? (id_ex_pc + id_ex_imm_b) :
+                                                    (id_ex_pc + 32'd4);
 
     always @(posedge clk) begin
         if (id_ex_branch) begin
@@ -395,10 +540,11 @@ module cpu_pipeline_cache_locked (
         end
     end
 
-    wire [31:0] ex_result = id_ex_lui   ? id_ex_imm_u :
-                             id_ex_auipc ? (id_ex_pc + id_ex_imm_u) :
-                             id_ex_jump  ? (id_ex_pc + 32'd4) :
-                                           ex_alu_result;
+    wire [31:0] ex_result = id_ex_lui    ? id_ex_imm_u :
+                             id_ex_auipc  ? (id_ex_pc + id_ex_imm_u) :
+                             id_ex_jump   ? (id_ex_pc + 32'd4) :
+                             id_ex_is_csr ? csr_read_value :
+                                            ex_alu_result;
 
     // ---- EX/MEM pipeline register ----
     reg [31:0] ex_mem_alu_result, ex_mem_rs2_data, ex_mem_result;
@@ -416,8 +562,18 @@ module cpu_pipeline_cache_locked (
             ex_mem_result      <= ex_result;
             ex_mem_rd          <= id_ex_rd;
             ex_mem_funct3      <= id_ex_funct3;
-            ex_mem_reg_write   <= id_ex_reg_write;
-            ex_mem_mem_write   <= id_ex_mem_write;
+            // Gated by !trap_taken - if this instruction is being
+            // interrupted rather than allowed to complete, neither
+            // its register write nor its memory write should commit;
+            // it'll re-execute from scratch after MRET returns to
+            // mepc. Everything else in the pipeline that resolves
+            // this cycle (JALR/branch) is allowed to complete
+            // normally even when flushed for OTHER reasons (younger
+            // instructions get squashed, not this one) - interrupts
+            // are the one case where the CURRENT EX instruction
+            // itself must not commit.
+            ex_mem_reg_write   <= id_ex_reg_write && !trap_taken;
+            ex_mem_mem_write   <= id_ex_mem_write && !trap_taken;
             ex_mem_mem_to_reg  <= id_ex_mem_to_reg;
         end
     end
@@ -441,24 +597,39 @@ module cpu_pipeline_cache_locked (
     //                independent of position)
     //   0xFFFFFF18 - PWM duty cycle (read/write - read returns the
     //                last value written)
+    //   0xFFFFFF1C - timer compare value (read/write - interrupt
+    //                fires, periodically, when the timer's free-
+    //                running count reaches this)
+    //   0xFFFFFF20 - timer pending/acknowledge (bit 0 readable; any
+    //                store clears it - see timer.v for why this is a
+    //                dedicated register rather than matching real
+    //                CLINT's "rewrite the compare value" convention)
+    //   0xFFFFFF24 - timer count (read-only diagnostic)
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
-    localparam [31:0] MMIO_CYCLE_ADDR = 32'hFFFFFF04;
-    localparam [31:0] MMIO_HIT_ADDR   = 32'hFFFFFF08;
-    localparam [31:0] MMIO_MISS_ADDR  = 32'hFFFFFF0C;
+    localparam [31:0] MMIO_CYCLE_ADDR        = 32'hFFFFFF04;
+    localparam [31:0] MMIO_HIT_ADDR          = 32'hFFFFFF08;
+    localparam [31:0] MMIO_MISS_ADDR         = 32'hFFFFFF0C;
+    localparam [31:0] MMIO_TIMER_CMP_ADDR    = 32'hFFFFFF1C;
+    localparam [31:0] MMIO_TIMER_ACK_ADDR    = 32'hFFFFFF20;
+    localparam [31:0] MMIO_TIMER_COUNT_ADDR  = 32'hFFFFFF24;
 
-    wire is_mmio_lock_write   = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
-    wire is_mmio_cycle_addr   = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
-    wire is_mmio_hit_addr     = (ex_mem_alu_result == MMIO_HIT_ADDR);
-    wire is_mmio_miss_addr    = (ex_mem_alu_result == MMIO_MISS_ADDR);
-    wire is_mmio_enc_pos_addr = (ex_mem_alu_result == MMIO_ENC_POS_ADDR);
-    wire is_mmio_enc_err_addr = (ex_mem_alu_result == MMIO_ENC_ERR_ADDR);
-    wire is_mmio_pwm_addr     = (ex_mem_alu_result == MMIO_PWM_ADDR);
-    wire is_mmio_addr         = is_mmio_lock_write || is_mmio_cycle_addr ||
-                                 is_mmio_hit_addr || is_mmio_miss_addr ||
-                                 is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
-                                 is_mmio_pwm_addr;
+    wire is_mmio_lock_write    = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
+    wire is_mmio_cycle_addr    = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
+    wire is_mmio_hit_addr      = (ex_mem_alu_result == MMIO_HIT_ADDR);
+    wire is_mmio_miss_addr     = (ex_mem_alu_result == MMIO_MISS_ADDR);
+    wire is_mmio_enc_pos_addr  = (ex_mem_alu_result == MMIO_ENC_POS_ADDR);
+    wire is_mmio_enc_err_addr  = (ex_mem_alu_result == MMIO_ENC_ERR_ADDR);
+    wire is_mmio_pwm_addr      = (ex_mem_alu_result == MMIO_PWM_ADDR);
+    wire is_mmio_timer_cmp     = (ex_mem_alu_result == MMIO_TIMER_CMP_ADDR);
+    wire is_mmio_timer_ack     = (ex_mem_alu_result == MMIO_TIMER_ACK_ADDR);
+    wire is_mmio_timer_count   = (ex_mem_alu_result == MMIO_TIMER_COUNT_ADDR);
+    wire is_mmio_addr          = is_mmio_lock_write || is_mmio_cycle_addr ||
+                                  is_mmio_hit_addr || is_mmio_miss_addr ||
+                                  is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
+                                  is_mmio_pwm_addr || is_mmio_timer_cmp ||
+                                  is_mmio_timer_ack || is_mmio_timer_count;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -483,15 +654,37 @@ module cpu_pipeline_cache_locked (
             pwm_duty_cycle <= ex_mem_rs2_data;
     end
 
+    reg [31:0] timer_compare;
+    always @(posedge clk) begin
+        if (reset)
+            timer_compare <= 32'd0;
+        else if (ex_mem_mem_write && is_mmio_timer_cmp)
+            timer_compare <= ex_mem_rs2_data;
+    end
+
+    wire [31:0] timer_count;
+
+    timer timer_inst (
+        .clk(clk),
+        .reset(reset),
+        .compare(timer_compare),
+        .clear_pending(ex_mem_mem_write && is_mmio_timer_ack),
+        .count(timer_count),
+        .pending(timer_pending)
+    );
+
     wire [31:0] mem_dmem_read_data;
     wire [31:0] mem_read_data_muxed =
-        is_mmio_cycle_addr   ? cycle_count :
-        is_mmio_hit_addr     ? hit_count :
-        is_mmio_miss_addr    ? miss_count :
-        is_mmio_enc_pos_addr ? enc_position :
-        is_mmio_enc_err_addr ? enc_error_count :
-        is_mmio_pwm_addr     ? pwm_duty_cycle :
-                               mem_dmem_read_data;
+        is_mmio_cycle_addr    ? cycle_count :
+        is_mmio_hit_addr      ? hit_count :
+        is_mmio_miss_addr     ? miss_count :
+        is_mmio_enc_pos_addr  ? enc_position :
+        is_mmio_enc_err_addr  ? enc_error_count :
+        is_mmio_pwm_addr      ? pwm_duty_cycle :
+        is_mmio_timer_cmp     ? timer_compare :
+        is_mmio_timer_ack     ? {31'd0, timer_pending} :
+        is_mmio_timer_count   ? timer_count :
+                                mem_dmem_read_data;
 
     dmem dmem_inst (
         .clk(clk),
