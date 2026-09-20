@@ -38,7 +38,8 @@ module control (
     output reg       lui,
     output reg       auipc,
     output reg       is_csr,
-    output reg       csr_set_mode   // 0 = CSRRW (write rs1 verbatim), 1 = CSRRS (write old|rs1)
+    output reg       csr_set_mode,  // 0 = CSRRW (write rs1 verbatim), 1 = CSRRS (write old|rs1)
+    output reg       is_mac
 );
 
     // Opcodes handled so far
@@ -52,6 +53,7 @@ module control (
     localparam OPCODE_LUI    = 7'b0110111;
     localparam OPCODE_AUIPC  = 7'b0010111;
     localparam OPCODE_SYSTEM = 7'b1110011;
+    localparam OPCODE_MAC    = 7'b0001011; // custom-0 - `mac rd, rs1, rs2`
 
     // ALU op used for address calculation on every load/store/JALR:
     // rs1 + imm
@@ -79,6 +81,7 @@ module control (
         auipc      = 1'b0;
         is_csr     = 1'b0;
         csr_set_mode = 1'b0;
+        is_mac     = 1'b0;
 
         case (opcode)
             OPCODE_R_TYPE: begin
@@ -193,6 +196,18 @@ module control (
                                // this project writes - deferred, same
                                // as other "simple subset first" calls
                 endcase
+            end
+
+            OPCODE_MAC: begin
+                // mac rd, rs1, rs2: rd = rd + (rs1*rs2), Q16.16 -
+                // computed entirely in the CPU top-level file (needs
+                // a hardware multiplier and rd's own current value as
+                // a third read, neither of which control.v has
+                // access to or any business deciding). Only funct3/
+                // funct7 == 0 is recognized; nothing else uses this
+                // opcode, so no further sub-decoding is needed.
+                reg_write = 1'b1;
+                is_mac    = 1'b1;
             end
 
             default: ; // unrecognized opcode: keep the NOP-like defaults above

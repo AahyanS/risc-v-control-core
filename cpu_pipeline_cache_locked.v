@@ -276,6 +276,7 @@ module cpu_pipeline_cache_locked (
     wire       id_auipc;
     wire       id_is_csr;
     wire       id_csr_set_mode;
+    wire       id_is_mac;
 
     control control_inst (
         .opcode(id_opcode),
@@ -292,7 +293,8 @@ module cpu_pipeline_cache_locked (
         .lui(id_lui),
         .auipc(id_auipc),
         .is_csr(id_is_csr),
-        .csr_set_mode(id_csr_set_mode)
+        .csr_set_mode(id_csr_set_mode),
+        .is_mac(id_is_mac)
     );
 
     // MRET: decoded directly from the raw instruction bits rather than
@@ -306,6 +308,7 @@ module cpu_pipeline_cache_locked (
 
     wire [31:0] id_rs1_data;
     wire [31:0] id_rs2_data;
+    wire [31:0] id_acc_data;   // MAC's implicit 3rd read: rd's current value
     wire [31:0] wb_reg_write_data;
     wire        wb_reg_write;
     wire [4:0]  wb_rd;
@@ -315,14 +318,17 @@ module cpu_pipeline_cache_locked (
         .we(wb_reg_write),
         .rs1_addr(id_rs1),
         .rs2_addr(id_rs2),
+        .rs3_addr(id_rd),        // MAC reads rd as an accumulator input, same field as the write destination
         .rd_addr(wb_rd),
         .rd_data(wb_reg_write_data),
         .rs1_data(id_rs1_data),
-        .rs2_data(id_rs2_data)
+        .rs2_data(id_rs2_data),
+        .rs3_data(id_acc_data)
     );
 
     wire [31:0] id_rs1_fwd = (wb_reg_write && (wb_rd != 5'd0) && (wb_rd == id_rs1)) ? wb_reg_write_data : id_rs1_data;
     wire [31:0] id_rs2_fwd = (wb_reg_write && (wb_rd != 5'd0) && (wb_rd == id_rs2)) ? wb_reg_write_data : id_rs2_data;
+    wire [31:0] id_acc_fwd = (wb_reg_write && (wb_rd != 5'd0) && (wb_rd == id_rd))  ? wb_reg_write_data : id_acc_data;
 
     // ---- ID/EX pipeline register (unchanged) ----
     reg [31:0] id_ex_pc;
@@ -331,11 +337,12 @@ module cpu_pipeline_cache_locked (
     reg [2:0]  id_ex_funct3;
     reg [31:0] id_ex_rs1_data, id_ex_rs2_data, id_ex_imm;
     reg [31:0] id_ex_imm_b, id_ex_imm_j, id_ex_imm_u;
+    reg [31:0] id_ex_acc_data;
     reg [3:0]  id_ex_alu_ctrl;
     reg        id_ex_alu_src, id_ex_reg_write, id_ex_mem_write,
                id_ex_mem_to_reg, id_ex_branch, id_ex_jump, id_ex_lui,
                id_ex_auipc, id_ex_predicted_taken;
-    reg        id_ex_is_csr, id_ex_csr_set_mode, id_ex_is_mret;
+    reg        id_ex_is_csr, id_ex_csr_set_mode, id_ex_is_mret, id_ex_is_mac;
     reg        id_ex_valid;
 
     always @(posedge clk) begin
@@ -351,6 +358,7 @@ module cpu_pipeline_cache_locked (
             id_ex_rd         <= 5'd0;
             id_ex_is_csr     <= 1'b0;
             id_ex_is_mret    <= 1'b0;
+            id_ex_is_mac     <= 1'b0;
             id_ex_valid      <= 1'b0;
         end else begin
             id_ex_pc         <= if_id_pc;
@@ -379,6 +387,8 @@ module cpu_pipeline_cache_locked (
             id_ex_is_csr       <= id_is_csr;
             id_ex_csr_set_mode <= id_csr_set_mode;
             id_ex_is_mret      <= id_is_mret;
+            id_ex_is_mac       <= id_is_mac;
+            id_ex_acc_data     <= id_acc_fwd;
         end
     end
 
@@ -394,6 +404,39 @@ module cpu_pipeline_cache_locked (
         (ex_mem_reg_write && !ex_mem_mem_to_reg && (ex_mem_rd != 5'd0) && (ex_mem_rd == id_ex_rs2)) ? ex_mem_result :
         (mem_wb_reg_write_r && (mem_wb_rd_r != 5'd0) && (mem_wb_rd_r == id_ex_rs2)) ? wb_reg_write_data :
         id_ex_rs2_data;
+
+    // MAC's accumulator read (rd, read as a source alongside rs1/rs2) -
+    // same two-stage forwarding pattern as rs1/rs2, just comparing
+    // against id_ex_rd (the SAME field MAC reads and writes) instead
+    // of id_ex_rs1/id_ex_rs2. This matters in exactly the case MAC
+    // exists for: three consecutive mac instructions accumulating
+    // into the same rd (Kp*error, then Ki*integral, then
+    // Kd*derivative) - each one depends on the immediately preceding
+    // one's result, which hasn't reached WB yet.
+    wire [31:0] fwd_acc_data =
+        (ex_mem_reg_write && !ex_mem_mem_to_reg && (ex_mem_rd != 5'd0) && (ex_mem_rd == id_ex_rd)) ? ex_mem_result :
+        (mem_wb_reg_write_r && (mem_wb_rd_r != 5'd0) && (mem_wb_rd_r == id_ex_rd)) ? wb_reg_write_data :
+        id_ex_acc_data;
+
+    // ---- Custom MAC instruction (Phase 4): rd = rd + (rs1*rs2), Q16.16 ----
+    // A genuine hardware multiplier - Verilog's * describes real
+    // multiplier circuitry once it's inside an RTL module, even
+    // though this CPU's own instruction set has no general multiply
+    // (base RV32I) - that gap is exactly why the software PID needed
+    // -lgcc's __mulsi3/__muldi3 earlier. This is the hardware-
+    // accelerated alternative for the one operation a PID loop
+    // actually repeats.
+    //
+    // Kept as its own dedicated combinational block, not folded into
+    // the shared ALU - ordinary ALU operations (add/sub/compare/etc,
+    // used by every instruction) don't pay any timing cost from the
+    // multiplier's presence; only MAC's own path does. Real cost/
+    // benefit reporting (does this lengthen the critical path enough
+    // to reduce Fmax) needs FPGA synthesis timing analysis - a Phase 5
+    // concern once that toolchain is actually in the loop, not
+    // something simulation can answer.
+    wire signed [63:0] mac_product = $signed(fwd_rs1_data) * $signed(fwd_rs2_data);
+    wire        [31:0] mac_result  = fwd_acc_data + mac_product[47:16];
 
     wire [31:0] ex_alu_b = id_ex_alu_src ? id_ex_imm : fwd_rs2_data;
     wire [31:0] ex_alu_result;
@@ -544,6 +587,7 @@ module cpu_pipeline_cache_locked (
                              id_ex_auipc  ? (id_ex_pc + id_ex_imm_u) :
                              id_ex_jump   ? (id_ex_pc + 32'd4) :
                              id_ex_is_csr ? csr_read_value :
+                             id_ex_is_mac ? mac_result :
                                             ex_alu_result;
 
     // ---- EX/MEM pipeline register ----
@@ -719,7 +763,13 @@ module cpu_pipeline_cache_locked (
     assign wb_reg_write_data = mem_wb_mem_to_reg ? mem_wb_dmem_read_data
                                                   : mem_wb_result;
 
+    // MAC reads id_rd as an implicit third source (the accumulator) -
+    // a preceding load's destination landing there is just as real a
+    // hazard as it landing in rs1/rs2, so it needs the same stall,
+    // gated on id_is_mac so ordinary instructions (which never read
+    // their own rd) aren't affected.
     assign load_use_hazard = id_ex_mem_to_reg && (id_ex_rd != 5'd0) &&
-                              ((id_ex_rd == id_rs1) || (id_ex_rd == id_rs2));
+                              ((id_ex_rd == id_rs1) || (id_ex_rd == id_rs2) ||
+                               (id_is_mac && id_ex_rd == id_rd));
 
 endmodule

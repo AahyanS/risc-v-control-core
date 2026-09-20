@@ -219,14 +219,24 @@ locking or scratchpad memory for exactly this reason).
       run_compliance.sh takes an optional `pipeline` argument to pick
       which. Files: `tb_compliance_pipeline.v`, updated
       `run_compliance.sh`.)
-- [ ] Generic stall mechanism (required later for cache-miss stalls) -
-      deliberately deferred rather than built speculatively now: the
-      only stall that exists today (load-use) is hardcoded for one
-      specific condition and a fixed one-cycle duration, and a truly
-      generic version needs to freeze multiple stages for a variable
-      duration driven by an external signal whose exact shape isn't
-      known until the Phase 3 cache controller actually exists to
-      define it — **next task is Phase 3**
+- [x] Generic stall mechanism (required later for cache-miss stalls) -
+      deliberately deferred rather than built speculatively, since the
+      exact shape needed wasn't knowable until the Phase 3 cache
+      controller actually existed to define it. Resolved differently
+      than originally anticipated, not superseded by neglect: `icache.v`
+      (and `spi_flash_ctrl.v` before it) ended up defining their own
+      dedicated req/ready/busy handshake rather than needing a
+      generic, multi-stage pipeline freeze bolted on afterward - IF's
+      existing `fetch_issued`/`pending_redirect` state machine
+      (originally built for XIP fetch latency, Phase 3) turned out to
+      be the general mechanism this item was anticipating, just
+      arrived at from the fetch side rather than as a separate
+      cross-cutting stall signal. No dedicated "generic stall" module
+      was ever needed because the actual variable-latency waiting this
+      item worried about (flash fetch, then cache miss/fill, now also
+      MAC's own single-cycle path never needing one at all) was always
+      naturally IF-stage or EX-stage local, not something requiring
+      coordination across arbitrary pipeline stages.
 
 ### Phase 3 — Memory hierarchy (the thesis)
 
@@ -707,8 +717,118 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
       after this addition. Files: `timer.v`, `tb_timer.v`, `control.v`,
       `cpu_pipeline_cache_locked.v`, `sw/interrupt_test.s`,
       `tb_interrupt_test.v`.)
-- [ ] Custom PID-MAC instruction (see below)
-- [ ] Branch predictor + measurement (see below)
+- [x] Custom PID-MAC instruction (see below - design notes there;
+      results here). `mac rd, rs1, rs2`: `rd = rd + (rs1*rs2)`,
+      Q16.16, RISC-V's reserved custom-0 opcode space (0x0B), encoded
+      via GNU as's `.insn r` directive since it's not a mnemonic the
+      assembler knows. A genuine hardware multiplier - Verilog's `*`
+      describes real multiplier circuitry once it's inside an RTL
+      module, even though this core's own instruction set has no
+      general multiply (base RV32I) - the exact gap that made the
+      software PID need `-lgcc`'s `__mulsi3`/`__muldi3` earlier. Kept
+      as its own dedicated combinational block rather than folded into
+      the shared ALU, so ordinary ALU operations (used by every
+      instruction) don't pay any timing cost from the multiplier's
+      presence - only MAC's own path does.
+
+      The real design difficulty wasn't the multiply itself - it was
+      that `rd` is both read (as the accumulator) and written (as the
+      destination) by the same instruction, which ordinary R-type
+      instructions never do. That needed: a third register-file read
+      port (`regfile.v` - purely additive, a combinational lookup with
+      no side effects, so every other CPU configuration in this
+      project that doesn't connect it is unaffected); a full two-stage
+      forwarding chain for that accumulator read, mirroring rs1/rs2's
+      existing pattern exactly (matters in exactly the case MAC exists
+      for - three consecutive MACs accumulating into the same
+      register, each depending on the immediately preceding one's
+      result); and extending the load-use hazard check, since a MAC
+      reading a just-loaded accumulator is a real hazard the original
+      check (rs1/rs2 only) didn't cover.
+
+      Verified three things end-to-end, all passing on the first
+      attempt (no bugs found this round - `sw/mac_test.s` +
+      `tb_mac_test.v`): basic multiply-accumulate correctness
+      (cross-checked against the same 1.5×2.5=3.75 values pid.c's
+      q16_mul test already uses); three back-to-back MACs
+      accumulating into the same register, exercising the new EX-stage
+      forwarding; a load immediately followed by using that value as
+      MAC's accumulator, exercising the load-use hazard extension. All
+      8 pre-existing Configuration 3 regression tests, plus the full
+      compliance suite on both cpu.v and cpu_pipeline.v (40/40 each -
+      `regfile.v`/`control.v` are shared), re-verified passing.
+
+      Benchmark (`sw/mac_benchmark.s` + `sw/software_mac_benchmark.c`,
+      identical computation, identical values -
+      `output = Kp*error + Ki*integral + Kd*derivative` - only the
+      multiply mechanism differs): MAC hardware took 1585 cycles;
+      software `q16_mul` took 33343 cycles - a ~21x speedup. Important
+      nuance, not glossed over: this system is fetch-bound (XIP from
+      external flash), so the 1585/33343 cycle counts are dominated by
+      *how many instructions had to be fetched*, not raw computation
+      speed - MAC's real advantage here is collapsing an entire
+      software multiply routine (dozens of instructions, each paying
+      flash-fetch latency) down to one instruction, not making the
+      multiply itself faster per cycle. Arguably a MORE compelling
+      motivation for this specific memory-hierarchy-constrained
+      system than raw ALU throughput would be, but worth stating
+      precisely rather than just quoting "21x faster."
+
+      Cost side NOT completed: PROJECT.md's own benchmark plan calls
+      for Fmax/LUT/FF utilization from real FPGA synthesis (Vivado),
+      to report whether the multiplier lengthens the critical path -
+      no synthesis toolchain (Vivado/Yosys/Quartus) is available in
+      this environment (checked, none found), so this genuinely can't
+      be answered here. Stays a real, open item for Phase 5 once that
+      toolchain is actually in the loop - reported as missing, not
+      guessed at or silently skipped. Files: `regfile.v`, `control.v`,
+      `cpu_pipeline_cache_locked.v`, `sw/mac_test.s`, `tb_mac_test.v`,
+      `sw/mac_benchmark.s`, `sw/software_mac_benchmark.c`,
+      `tb_mac_benchmark.v`, `tb_software_mac_benchmark.v`.)
+- [x] Branch predictor + measurement (see below for the original design
+      note; results here). The predictor itself was already built in
+      Phase 2 - this item was always about measuring it, not building
+      something new, and the deliverable PROJECT.md itself calls for
+      is "the measurement and the decision," not more hardware.
+
+      Measured on a representative control-loop shape
+      (`sw/predictor_measurement.s` + `tb_predictor_measurement.v`):
+      one tight backward branch, 1000 iterations. Result: 99.8%
+      accuracy - exactly 2 mispredictions out of 1000 branch
+      resolutions, matching a hand-derived prediction from the 2-bit
+      counter's own state machine before running anything (cold-start
+      misprediction on iteration 1, since the counter starts at
+      "weakly not-taken" and the branch is actually taken; then
+      correct for iterations 2-999 once it saturates to "strongly
+      taken"; then one unavoidable misprediction on the final
+      iteration, the loop exit, which nothing short of knowing the
+      loop bound in advance could predict). That's not just "close to
+      97-99%" - it's the mathematical ceiling for any predictor that
+      doesn't know the loop bound ahead of time. There's nothing left
+      for a fancier predictor (gshare, etc.) to improve on for this
+      shape, because the only two mispredictions are the two that are
+      architecturally unavoidable regardless of prediction scheme.
+
+      Also measured on the real interrupt-driven program
+      (`sw/interrupt_test.s`, reusing the existing hex - periodic
+      timer interrupts flushing the pipeline throughout, not a clean
+      synthetic loop): 98 branch resolutions, 2 mispredictions - the
+      exact same pattern (cold-start + exit), confirming interrupt-
+      induced flushes don't disturb the predictor's own training at
+      all (architecturally expected, since `bht` only updates from
+      `id_ex_branch`'s own resolution, entirely independent of
+      `trap_taken`/`ex_flush` - but confirmed by measurement rather
+      than just asserted from the design).
+
+      **Decision: gshare is deliberately not built**, backed by this
+      data, not by assumption. The one tight backward branch this
+      project's actual control loop shape produces is already served
+      as well as any predictor could serve it; a fancier predictor
+      would add real hardware cost (state, prediction latency) to
+      chase a ceiling this one already reached. Documented restraint
+      backed by numbers, per this project's own stated standard for
+      this decision. Files: `sw/predictor_measurement.s`,
+      `tb_predictor_measurement.v`.
 
 ### Phase 5 — Hardware bring-up and measurement
 
