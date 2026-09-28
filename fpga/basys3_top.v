@@ -33,12 +33,14 @@
 // Switch SW15 is a physical arm switch: with it down, the motor enable
 // is forced low no matter what the software does. Motor 2 is held off.
 //
-// ---- Encoder (Pmod JC) ----
-// Channels A/B are wired straight to JC1/JC2, and the encoder is
-// powered from JC's 3.3 V pin - never from the motor supply. The
-// Pololu encoder's outputs are pulled up to whatever voltage powers
-// it, so powering it from the motor rail would put that voltage on
-// FPGA pins. quad_decoder.v has its own two-flop synchronizers.
+// ---- Encoder (through the DHB1, arriving on JB3/JB4) ----
+// The encoder plugs into the DHB1's J7 header, which supplies it with
+// the Basys3's 3.3 V (never the motor supply - the Pololu encoder's
+// outputs are pulled up to whatever powers it). The DHB1 passes A/B
+// through 74-series inverting Schmitt-trigger buffers (NL27WZ14) to
+// J1 pins 3/4. Inverting both channels keeps the quadrature sequence
+// in the same cyclic order, so direction is unchanged; tb_quad_decoder
+// checks this. quad_decoder.v has its own two-flop synchronizers.
 //
 // ---- LEDs ----
 // LD0-LD15 show the CPU's LED register (0xFFFFFF28).
@@ -61,7 +63,7 @@ module basys3_top #(
     output        dhb1_en2,
     output        dhb1_dir2,
 
-    // Encoder on JC
+    // Encoder, via DHB1 J7 -> S1A/S1B -> JB3/JB4
     input         enc_a,
     input         enc_b,
 

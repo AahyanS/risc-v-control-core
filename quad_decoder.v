@@ -41,28 +41,41 @@ module quad_decoder (
 );
 
     // ---- Synchronizer ----
+    // Deliberately not reset: it keeps tracking the real pins during
+    // reset, so prev_state below can start from the encoder's actual
+    // resting state rather than an assumed 00.
     reg a_sync1, a_sync2;
     reg b_sync1, b_sync2;
 
     always @(posedge clk) begin
-        if (reset) begin
-            a_sync1 <= 1'b0; a_sync2 <= 1'b0;
-            b_sync1 <= 1'b0; b_sync2 <= 1'b0;
-        end else begin
-            a_sync1 <= a;       a_sync2 <= a_sync1;
-            b_sync1 <= b;       b_sync2 <= b_sync1;
-        end
+        a_sync1 <= a;       a_sync2 <= a_sync1;
+        b_sync1 <= b;       b_sync2 <= b_sync1;
     end
 
     wire [1:0] curr_state = {a_sync2, b_sync2};
     reg  [1:0] prev_state;
 
+    // Cycles left before decoding starts after reset (see below).
+    reg  [1:0] settle;
+
     // ---- Decode: compare this cycle's state to last cycle's ----
+    // For the first three cycles after reset, prev_state just follows
+    // the pins instead of decoding. A shaft can stop in any of the four
+    // states (and the DHB1's inverting buffers turn a resting 00 into
+    // 11), and the synchronizer needs two cycles to carry the real
+    // value through - so decoding immediately, from an assumed 00 or a
+    // not-yet-filled synchronizer, logged a false invalid transition at
+    // startup. Waiting it out works for any reset length.
     always @(posedge clk) begin
         if (reset) begin
-            prev_state  <= 2'b00;
+            prev_state  <= curr_state;
+            settle      <= 2'd3;
             position    <= 32'sd0;
             error_count <= 32'd0;
+        end else if (settle != 2'd0) begin
+            prev_state <= curr_state;
+            settle     <= settle - 2'd1;
+            if (clear_position) position <= 32'sd0;
         end else begin
             prev_state <= curr_state;
 

@@ -877,10 +877,41 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
   - **LED register (0xFFFFFF28) and motor-direction register
     (0xFFFFFF2C)** added to the core - a way to see the CPU running
     without a debugger, and the direction bit the guard consumes.
-  - **Encoder wiring is decoupled from the DHB1**: A/B go to Pmod JC,
-    and the encoder is powered from JC's 3.3 V. Pololu's encoder
-    outputs are pulled up to its own supply voltage, so powering it
-    from the motor rail would put that voltage on FPGA pins.
+  - **Encoder and motor wiring settled from the DHB1 schematic**
+    (Digilent doc 500-259). The first plan routed the encoder to Pmod JC
+    and the motor through the DHB1's JST connector J2, whose pinout
+    couldn't be confirmed without the schematic: the encoder inputs
+    read OL on every resistance range, and diode-mode readings through
+    the unpowered H-bridge were inconsistent. The schematic resolved it:
+    the encoder inputs pass through NL27WZ14 inverting Schmitt-trigger
+    buffers (no DC path, hence OL), and the board has a screw terminal
+    for the motor (J5: M1+/M1−) and a 0.1" header for the encoder (J7:
+    SA1-IN, SB1-IN, GND, 3.3 V). So the motor screws into J5 (no
+    connector adapter to buy), the encoder plugs into J7 and is powered
+    from the Basys3's 3.3 V, and A/B arrive buffered on JB3/JB4. Pololu's
+    encoder outputs are pulled up to its own supply voltage, so it must
+    never be powered from the motor rail. Inverting both channels keeps
+    the quadrature sequence in the same cyclic order, so direction is
+    preserved (checked in `tb_quad_decoder.v`).
+  - **Two fixes found while working through the wiring:**
+    `quad_decoder.v` reset its synchronizer and `prev_state` to 00, so
+    coming out of reset with the encoder resting in any other state
+    logged a false invalid transition. With the DHB1's inversion, a
+    shaft resting at 00 reads as 11, so this would have happened on
+    real hardware. The synchronizer now runs through reset, and for
+    three cycles after reset `prev_state` just follows the pins
+    instead of decoding. The first attempt only followed the pins
+    *during* reset, which still failed `tb_encoder_test.v`: its reset
+    is one cycle long, shorter than the synchronizer's two-cycle fill,
+    so the decoder adopted a not-yet-valid state. Waiting out the
+    synchronizer after reset works for any reset length. A new test
+    releases reset with the inputs at 11 and checks zero errors. And
+    `tb_quad_decoder.v` had never been updated when `clear_position`
+    was added to the decoder: the port floated, turning `position` into
+    X, so that standalone testbench had been failing since then. The
+    regression runs used the full-CPU encoder test, which does connect
+    the port, so they didn't catch it. The port is now tied off and the
+    standalone test is part of the regression runs.
   - **Board-level simulation** (`fpga/sim/`): simulation models of
     MMCME2_BASE, BUFG, and STARTUPE2 (including the three lost clocks)
     run the complete wrapper with both hardware programs stored at

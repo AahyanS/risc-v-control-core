@@ -87,34 +87,50 @@ Do every step with the Basys3 **powered off** and the motor supply
   terminals, and must stay between 2.7 V and 10.8 V. Never power the
   motor from the Basys3's USB.
 
+Everything connects to the DHB1; nothing goes on the Basys3 except the
+DHB1 itself. The DHB1's white JST connectors (J2, J3) aren't used.
+
 **DHB1:** plug it into Pmod port **JB** (the top row of the DHB1's
 12-pin header goes in the top row of JB).
 
-**Motor power leads to the DHB1:** the motor connects to the DHB1's
-6-pin connector **J2** (motor 1). Only two of J2's six pins carry motor
-power; before connecting anything, identify them:
-- Check the silkscreen next to J2 first.
-- To confirm with a multimeter in continuity mode (board unpowered,
-  DHB1 plugged into nothing): the J2 pins that beep against the DHB1's
-  12-pin header pins 3, 4 (S1A, S1B), 5/11 (GND) or 6/12 (VCC) are
-  *not* motor pins. The remaining two are the motor outputs.
-- Also measure J2's pin pitch: JST PH is 2.0 mm between pins.
+**Preparing the Pololu cable (female-to-female, #4767):** cut it in
+half. Plug one half's connector into the motor; keep the other half as
+a spare. At the cut end:
+- **Red and black:** strip about 6 mm. The wire is thin, so twist the
+  strands tightly (folding the stripped end back on itself gives the
+  screw terminal more to grip).
+- **Yellow, white, green, blue:** cut four female-to-female jumpers in
+  half, solder one half to each wire, and cover each joint with its own
+  heat-shrink. These plug onto the DHB1's J7 pins.
 
-Then connect the Pololu cable's **red (M1)** and **black (M2)** wires to
-those two J2 pins. Leave J2's other four pins unconnected.
+**Motor power to J5** (blue screw terminal labeled M1+ / M1−):
 
-**Encoder to Pmod JC** (Basys3 pin numbering: pins 1-4 top row, 5 = GND,
-6 = 3.3 V; pins 7-10 bottom row):
-
-| Pololu wire | Signal | Basys3 JC pin |
+| Pololu wire | Signal | DHB1 |
 |---|---|---|
-| Yellow | Encoder A | JC1 |
-| White | Encoder B | JC2 |
-| Green | Encoder GND | JC5 (GND) |
-| Blue | Encoder VCC | JC6 (3.3 V) |
+| Red | Motor M1 | **J5 M1+** |
+| Black | Motor M2 | **J5 M1−** |
 
-**Motor supply:** 6 V (e.g. 4×AA holder) to the DHB1's **VM** (+) and
-**GND** (−) screw terminals.
+**Encoder to J7** (4-pin header labeled S1A / S1B, "M1 Feedback"). J7's
+3.3 V comes from the Basys3, so the encoder is powered safely. The
+DHB1 buffers A/B and forwards them to JB3/JB4.
+
+| Pololu wire | Signal | DHB1 J7 pin |
+|---|---|---|
+| Yellow | Encoder A | 1 (SA1-IN) |
+| White | Encoder B | 2 (SB1-IN) |
+| Green | Encoder GND | 3 (GND) |
+| Blue | Encoder VCC | 4 (VCC, 3.3 V) |
+
+Before plugging onto J7, confirm which end is pin 1 with the multimeter
+(DHB1 unpowered): J7 pin 3 reads ~0 Ω to J1 pin 5 (GND), and J7 pin 4
+reads ~0 Ω to J1 pin 6 (VCC). Getting GND and VCC swapped would
+reverse-power the encoder.
+
+**Leave as-is:** the blue jumpers on JP1/JP2 only affect motor 2, and
+headers J8, J9, and J10 aren't needed.
+
+**Motor supply:** 6 V (e.g. 4×AA holder) to the DHB1's **J4** screw
+terminal: **VM** (+) and **GND** (−).
 
 **Before powering anything:** SW15 **down** (motor disarmed).
 
@@ -138,7 +154,8 @@ repeating. LD15 shows the direction, LD14 shows motor on, and LD13-LD0
 (encoder position / 64) count up in one direction and down in the other.
 
 If the count goes the wrong way for the direction you consider forward,
-swap the yellow and white encoder wires (or the two motor wires). If it
+swap the yellow and white encoder wires on J7 (or the red and black
+wires on J5). If it
 doesn't move at all while the motor spins, recheck the encoder power and
 A/B wiring. Flip SW15 down at any time to stop the motor.
 

@@ -23,6 +23,7 @@ module tb_quad_decoder;
         .reset(reset),
         .a(a),
         .b(b),
+        .clear_position(1'b0),
         .position(position),
         .error_count(error_count)
     );
@@ -119,6 +120,30 @@ module tb_quad_decoder;
         a = 1; b = 0; settle;
         a = 0; b = 0; settle;
         check_position(6, "RECOVERY_AFTER_GLITCH");
+
+        // ---- Reset released while the encoder rests at 11 ----
+        // A shaft can stop in any of the four states, and the DHB1's
+        // Schmitt-trigger buffers invert both channels, so a shaft
+        // resting at 00 reaches the FPGA as 11. Coming out of reset
+        // must not log a false invalid transition from an assumed 00.
+        a = 1; b = 1;
+        reset = 1'b1;
+        settle; settle;
+        reset = 1'b0;
+        settle; settle;
+        check_errors(0, "RESET_AT_11_NO_FALSE_ERROR");
+        check_position(0, "RESET_AT_11_POSITION_ZERO");
+
+        // ---- Both channels inverted, as the DHB1 delivers them ----
+        // Forward 00->01->11->10 inverted is 11->10->00->01, which is
+        // the same cyclic order, so one full forward line must still
+        // count +4, not -4.
+        a = 1; b = 0; settle;
+        a = 0; b = 0; settle;
+        a = 0; b = 1; settle;
+        a = 1; b = 1; settle;
+        check_position(4, "INVERTED_CHANNELS_KEEP_DIRECTION");
+        check_errors(0, "INVERTED_CHANNELS_NO_ERRORS");
 
         $display("Testbench complete.");
         $finish;

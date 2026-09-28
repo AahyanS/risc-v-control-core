@@ -32,16 +32,18 @@ set_property -dict { PACKAGE_PIN L1  IOSTANDARD LVCMOS33 } [get_ports {led[15]}]
 
 ## ---- Pmod DHB1 plugged into JB (top row = pins 1-4, bottom row = 7-10) ----
 ## DHB1 J1: 1=EN1 2=DIR1 3=S1A 4=S1B 7=EN2 8=DIR2 9=S2A 10=S2B
-## S1A/S1B/S2A/S2B are unused - the encoder is wired to JC instead.
+## S2A/S2B (motor 2 feedback) are unused.
 set_property -dict { PACKAGE_PIN A14 IOSTANDARD LVCMOS33 } [get_ports dhb1_en1]
 set_property -dict { PACKAGE_PIN A16 IOSTANDARD LVCMOS33 } [get_ports dhb1_dir1]
 set_property -dict { PACKAGE_PIN A15 IOSTANDARD LVCMOS33 } [get_ports dhb1_en2]
 set_property -dict { PACKAGE_PIN A17 IOSTANDARD LVCMOS33 } [get_ports dhb1_dir2]
 
-## ---- Encoder on JC: JC1 = channel A, JC2 = channel B ----
-## (JC pin 5 = GND, JC pin 6 = 3.3 V for the encoder's supply)
-set_property -dict { PACKAGE_PIN K17 IOSTANDARD LVCMOS33 } [get_ports enc_a]
-set_property -dict { PACKAGE_PIN M18 IOSTANDARD LVCMOS33 } [get_ports enc_b]
+## ---- Encoder, through the DHB1 ----
+## The encoder plugs into the DHB1's J7 header; its A/B signals pass
+## through the DHB1's Schmitt-trigger buffers and arrive on J1 pins
+## 3/4 = S1A/S1B = Basys3 JB3/JB4.
+set_property -dict { PACKAGE_PIN B15 IOSTANDARD LVCMOS33 } [get_ports enc_a]
+set_property -dict { PACKAGE_PIN B16 IOSTANDARD LVCMOS33 } [get_ports enc_b]
 
 ## ---- Onboard QSPI flash ----
 ## The flash clock (CCLK) is not listed: it's a dedicated configuration
