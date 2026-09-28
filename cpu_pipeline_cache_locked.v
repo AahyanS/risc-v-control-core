@@ -41,8 +41,20 @@
 // Neither peripheral is wired into the plain XIP/cache configs - those
 // exist specifically for the cache-latency comparison experiment, not
 // for building the real control system on top of.
+//
+// ---- Board-facing outputs (Phase 5) ----
+// led: 16-bit register at 0xFFFFFF28 (read/write), for seeing the CPU
+// run on real hardware without a debugger. motor_dir: bit 0 of
+// 0xFFFFFF2C (read/write), the direction software is requesting - the
+// board top (fpga/basys3_top.v) passes it through motor_dir_guard.v
+// before it reaches the H-bridge, never directly.
+//
+// FLASH_BASE offsets every instruction fetch in flash (see
+// spi_flash_ctrl.v); 0 in simulation, set by the board top on hardware.
 
-module cpu_pipeline_cache_locked (
+module cpu_pipeline_cache_locked #(
+    parameter [23:0] FLASH_BASE = 24'h000000
+) (
     input clk,
     input reset,
 
@@ -57,7 +69,11 @@ module cpu_pipeline_cache_locked (
     input enc_b,
 
     // PWM output (to a real or simulated motor driver)
-    output pwm_out
+    output pwm_out,
+
+    // Board-facing outputs
+    output reg [15:0] led,
+    output reg        motor_dir
 );
 
     localparam [31:0] MMIO_LOCK_ADDR    = 32'hFFFFFF00;
@@ -131,7 +147,7 @@ module cpu_pipeline_cache_locked (
     wire [31:0] hit_count;
     wire [31:0] miss_count;
 
-    icache icache_inst (
+    icache #(.FLASH_BASE(FLASH_BASE)) icache_inst (
         .clk(clk),
         .reset(reset),
         .addr(pc_curr[23:0]),
@@ -649,6 +665,8 @@ module cpu_pipeline_cache_locked (
     //                dedicated register rather than matching real
     //                CLINT's "rewrite the compare value" convention)
     //   0xFFFFFF24 - timer count (read-only diagnostic)
+    //   0xFFFFFF28 - board LEDs, low 16 bits (read/write)
+    //   0xFFFFFF2C - motor direction request, bit 0 (read/write)
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -658,6 +676,8 @@ module cpu_pipeline_cache_locked (
     localparam [31:0] MMIO_TIMER_CMP_ADDR    = 32'hFFFFFF1C;
     localparam [31:0] MMIO_TIMER_ACK_ADDR    = 32'hFFFFFF20;
     localparam [31:0] MMIO_TIMER_COUNT_ADDR  = 32'hFFFFFF24;
+    localparam [31:0] MMIO_LED_ADDR          = 32'hFFFFFF28;
+    localparam [31:0] MMIO_MOTOR_DIR_ADDR    = 32'hFFFFFF2C;
 
     wire is_mmio_lock_write    = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
     wire is_mmio_cycle_addr    = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
@@ -669,11 +689,14 @@ module cpu_pipeline_cache_locked (
     wire is_mmio_timer_cmp     = (ex_mem_alu_result == MMIO_TIMER_CMP_ADDR);
     wire is_mmio_timer_ack     = (ex_mem_alu_result == MMIO_TIMER_ACK_ADDR);
     wire is_mmio_timer_count   = (ex_mem_alu_result == MMIO_TIMER_COUNT_ADDR);
+    wire is_mmio_led           = (ex_mem_alu_result == MMIO_LED_ADDR);
+    wire is_mmio_motor_dir     = (ex_mem_alu_result == MMIO_MOTOR_DIR_ADDR);
     wire is_mmio_addr          = is_mmio_lock_write || is_mmio_cycle_addr ||
                                   is_mmio_hit_addr || is_mmio_miss_addr ||
                                   is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
                                   is_mmio_pwm_addr || is_mmio_timer_cmp ||
-                                  is_mmio_timer_ack || is_mmio_timer_count;
+                                  is_mmio_timer_ack || is_mmio_timer_count ||
+                                  is_mmio_led || is_mmio_motor_dir;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -706,6 +729,16 @@ module cpu_pipeline_cache_locked (
             timer_compare <= ex_mem_rs2_data;
     end
 
+    always @(posedge clk) begin
+        if (reset) begin
+            led       <= 16'd0;
+            motor_dir <= 1'b0;
+        end else if (ex_mem_mem_write) begin
+            if (is_mmio_led)       led       <= ex_mem_rs2_data[15:0];
+            if (is_mmio_motor_dir) motor_dir <= ex_mem_rs2_data[0];
+        end
+    end
+
     wire [31:0] timer_count;
 
     timer timer_inst (
@@ -728,6 +761,8 @@ module cpu_pipeline_cache_locked (
         is_mmio_timer_cmp     ? timer_compare :
         is_mmio_timer_ack     ? {31'd0, timer_pending} :
         is_mmio_timer_count   ? timer_count :
+        is_mmio_led           ? {16'd0, led} :
+        is_mmio_motor_dir     ? {31'd0, motor_dir} :
                                 mem_dmem_read_data;
 
     dmem dmem_inst (

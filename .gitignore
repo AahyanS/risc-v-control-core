@@ -16,3 +16,12 @@ build_compliance/
 # Co-simulation trace output - regenerate by running tb_cosim.v and
 # cosim/iss.py against a given hex file
 cosim/*.trace
+
+# Vivado build output and scratch files - regenerate with
+# vivado -mode batch -source fpga/build.tcl
+fpga/build/
+.Xil/
+vivado*.jou
+vivado*.log
+vivado*.str
+usage_statistics_webtalk.*

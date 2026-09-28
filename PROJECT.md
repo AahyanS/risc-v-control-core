@@ -832,7 +832,69 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
 
 ### Phase 5 — Hardware bring-up and measurement
 
-- [ ] FPGA bring-up (Digilent Basys3, Vivado)
+Hardware on hand: Digilent Basys3, Pmod DHB1 (dual H-bridge), Pololu
+50:1 HP 6V Micro Metal Gearmotor with 12 CPR encoder (#5161) and its
+JST SH encoder cable. Bench procedure: `fpga/README.md`.
+
+- [x] Board design and bring-up files, verified in simulation before
+      the hardware is powered (`fpga/`). Decisions and why:
+  - **Program storage pivoted from a separate flash chip to the
+    Basys3's own configuration flash.** The FPGA bitstream sits at the
+    bottom of the onboard 4 MB Spansion S25FL032P; the CPU's program is
+    stored at 3 MB (above the ~2.2 MB XC7A35T bitstream) and fetched
+    from there, with both in one `.mcs` image. This is how production
+    systems (MCUs, MicroBlaze designs) share a boot flash, it needs no
+    extra hardware, and it avoids flying-wire SPI on a breadboard.
+    The cost: that flash's clock pin is a dedicated configuration pin,
+    reachable from user logic only through Xilinx's `STARTUPE2`
+    primitive, and per UG470 the first three clocks driven through it
+    after configuration never reach the pin. `basys3_top.v` issues
+    eight dummy clocks with chip-select high before releasing the CPU;
+    it also holds the flash's WP/HOLD pins high, since a floating HOLD
+    pauses the flash mid-transfer.
+  - **`FLASH_BASE` parameter** added to `spi_flash_ctrl.v` (threaded
+    through `icache.v` and `cpu_pipeline_cache_locked.v`), and a
+    matching `ADDR_BASE` to `spi_flash_model.v`. Both default to 0, so
+    every existing testbench is unchanged; all 17 re-verified.
+  - **25 MHz system clock** via an MMCM from the 100 MHz oscillator:
+    flash SCK = 12.5 MHz, far under the S25FL032P's 40 MHz limit for
+    the 0x03 read, with a full 40 ns clk period between the flash
+    updating MISO and the controller sampling it (covers the STARTUPE2
+    clock path, the flash's output delay, and pad delays). Cycle
+    counts, which the project measures, don't depend on frequency.
+  - **`motor_dir_guard.v`**: Digilent warns that changing the DHB1's
+    direction pin while enabled can short the H-bridge. The guard
+    enforces disable → wait → switch direction → wait → re-enable in
+    hardware, so no software bug (e.g. a PID output flipping sign) can
+    violate it. `tb_motor_dir_guard.v` checks the property every cycle
+    across directed cases and 400 randomized request changes: 197
+    completed reversals, zero violations. (The first version of the
+    stress test toggled the request every cycle, which always withdraws
+    before a reversal completes - correct behavior, but it exercised
+    zero flips, so a randomized segment was added.)
+  - **Physical arm switch**: SW15 must be up for the motor enable to
+    reach the DHB1, regardless of software.
+  - **LED register (0xFFFFFF28) and motor-direction register
+    (0xFFFFFF2C)** added to the core - a way to see the CPU running
+    without a debugger, and the direction bit the guard consumes.
+  - **Encoder wiring is decoupled from the DHB1**: A/B go to Pmod JC,
+    and the encoder is powered from JC's 3.3 V. Pololu's encoder
+    outputs are pulled up to its own supply voltage, so powering it
+    from the motor rail would put that voltage on FPGA pins.
+  - **Board-level simulation** (`fpga/sim/`): simulation models of
+    MMCME2_BASE, BUFG, and STARTUPE2 (including the three lost clocks)
+    run the complete wrapper with both hardware programs stored at
+    3 MB in the flash model. `hw_hello` boots, the heartbeat advances,
+    and the LEDs track a simulated encoder forward (+20) and back
+    (-8). `hw_motor_test` drives the motor enable in both directions,
+    never changes direction with enable high, and never enables the
+    motor with the arm switch down even while software is commanding
+    it. A negative control with the dummy boot clocks removed fails to
+    boot, confirming both that the model reproduces the real quirk
+    and that the workaround is what fixes it.
+- [ ] Bring-up on the physical board (`fpga/README.md` steps 2-5)
+- [ ] Real Fmax and utilization from Vivado (answers the MAC
+      critical-path question left open in Phase 4)
 - [ ] Motor + encoder + driver integration
 - [ ] Measurement campaign across the three configurations
 - [ ] Portfolio writeup with scope/logic-analyzer evidence
@@ -842,8 +904,9 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
 - Icarus Verilog (`iverilog`, `vvp`) + GTKWave for simulation, on Windows
 - VS Code + "Verilog-HDL/SystemVerilog" extension
 - Git + a GitHub repo for version control
-- Target board: Digilent Basys3 (Xilinx Artix-7 XC7A35T). Vivado not
-  installed yet — install once the board is in hand.
+- Target board: Digilent Basys3 (Xilinx Artix-7 XC7A35T) - in hand.
+  Vivado not installed yet (needs an AMD account; install steps in
+  `fpga/README.md`).
 - RISC-V GNU toolchain: xPack `riscv-none-elf-gcc` 15.2.0, installed at
   `C:\riscv-toolchain\`, on PATH. Early modules used hand-written hex
   instructions in testbenches; real programs are compiled now.

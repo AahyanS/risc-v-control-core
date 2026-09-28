@@ -50,7 +50,9 @@
 // fetched is a software usage error, not something the hardware
 // guards against here.
 
-module icache (
+module icache #(
+    parameter [23:0] FLASH_BASE = 24'h000000   // passed through to spi_flash_ctrl
+) (
     input         clk,
     input         reset,
 
@@ -128,7 +130,7 @@ module icache (
     wire        flash_ready;
     wire        flash_busy;
 
-    spi_flash_ctrl flash_ctrl_inst (
+    spi_flash_ctrl #(.FLASH_BASE(FLASH_BASE)) flash_ctrl_inst (
         .clk(clk),
         .reset(reset),
         .addr(flash_addr_r),

@@ -12,15 +12,23 @@
 // total, 2 clk cycles per bit (SCK toggles once per clk cycle) = ~128
 // clk cycles per 32-bit read.
 //
-// SCK here mirrors the system clock while a transaction is active
-// (toggled every clk cycle) rather than using an independent, slower
-// SPI clock domain - correct and sufficient for simulation, but real
-// flash chips have a maximum SPI clock frequency lower than a typical
-// FPGA system clock, so this will need a real clock divider once
-// hardware bring-up (Phase 5) is underway and the actual chip's
-// timing limits are known. Flagged here deliberately, not hidden.
+// SCK toggles once per clk cycle while a transaction is active, so SCK
+// runs at clk/2. On hardware (fpga/basys3_top.v) the whole system is
+// clocked at 25 MHz, giving a 12.5 MHz SCK - well under the 0x03 read
+// command's limit on either flash part Basys3 boards ship with (40 MHz
+// on the older Spansion part, 54 MHz on the Micron one), and leaving a
+// full 40 ns clk period between SCK falling (flash shifts out a bit)
+// and the next SCK rising (sampled here) to cover the STARTUPE2 clock
+// path, the flash's own output delay, and pad delays.
+//
+// FLASH_BASE is added to every address before it goes out on the bus,
+// so the program image can sit above the FPGA bitstream in the same
+// flash chip while the CPU still sees it starting at address 0. It
+// defaults to 0, which is what every simulation testbench uses.
 
-module spi_flash_ctrl (
+module spi_flash_ctrl #(
+    parameter [23:0] FLASH_BASE = 24'h000000
+) (
     input         clk,
     input         reset,
 
@@ -61,7 +69,7 @@ module spi_flash_ctrl (
                 busy        <= 1'b1;
                 xfer_active <= 1'b1;
                 out_phase   <= 1'b1;
-                out_shift   <= {CMD_READ, addr};
+                out_shift   <= {CMD_READ, addr + FLASH_BASE};
                 bits_left   <= 6'd32;
                 // First bit set directly (not via out_shift) since it
                 // must already be stable before the first rising edge,

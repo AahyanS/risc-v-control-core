@@ -19,8 +19,13 @@
 // testbench can load a compiled program's hex dump here to simulate
 // it actually living in flash.
 
+// ADDR_BASE is the flash address that mem[0] corresponds to - lets a
+// testbench model the hardware layout (program image stored above the
+// FPGA bitstream) without allocating a multi-megabyte array.
+
 module spi_flash_model #(
-    parameter MEM_BYTES = 8192
+    parameter        MEM_BYTES = 8192,
+    parameter [23:0] ADDR_BASE = 24'h000000
 )(
     input  sck,
     input  cs_n,
@@ -56,7 +61,7 @@ module spi_flash_model #(
     // auto-incrementing as more bits are clocked past the current
     // byte's 8).
     wire [6:0]  data_bit_index = bit_count - 7'd32;
-    wire [23:0] byte_index     = (flash_addr + (data_bit_index >> 3)) % MEM_BYTES;
+    wire [23:0] byte_index     = (flash_addr - ADDR_BASE + (data_bit_index >> 3)) % MEM_BYTES;
     wire [2:0]  bit_in_byte    = 3'd7 - data_bit_index[2:0];
 
     assign miso = (!cs_n && addr_valid) ? mem[byte_index][bit_in_byte] : 1'b0;
