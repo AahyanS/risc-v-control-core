@@ -59,10 +59,10 @@ module tb_cosim;
             tracefile = "cosim.trace";
 
         for (i = 0; i < 8192; i = i + 1)
-            uut.dmem_inst.mem[i] = 8'd0;
+            uut.dmem_inst.poke(i, 8'd0);
 
         $readmemh(hexfile, uut.imem_inst.mem);
-        $readmemh(hexfile, uut.dmem_inst.mem);
+        uut.dmem_inst.load_hex(hexfile);
 
         fd = $fopen(tracefile, "w");
 

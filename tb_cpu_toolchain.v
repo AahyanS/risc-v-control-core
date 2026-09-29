@@ -52,11 +52,11 @@ module tb_cpu_toolchain;
         // sum_loop.c stores the result (15) as a little-endian word at
         // byte address 0x200 (512)
         #1;
-        if (uut.dmem_inst.mem[512] !== 8'd15 || uut.dmem_inst.mem[513] !== 8'd0 ||
-            uut.dmem_inst.mem[514] !== 8'd0  || uut.dmem_inst.mem[515] !== 8'd0)
+        if (uut.dmem_inst.peek(512) !== 8'd15 || uut.dmem_inst.peek(513) !== 8'd0 ||
+            uut.dmem_inst.peek(514) !== 8'd0  || uut.dmem_inst.peek(515) !== 8'd0)
             $display("FAIL [COMPILED_SUM_RESULT]: mem[512..515] got=%0d %0d %0d %0d expected=15,0,0,0",
-                      uut.dmem_inst.mem[512], uut.dmem_inst.mem[513],
-                      uut.dmem_inst.mem[514], uut.dmem_inst.mem[515]);
+                      uut.dmem_inst.peek(512), uut.dmem_inst.peek(513),
+                      uut.dmem_inst.peek(514), uut.dmem_inst.peek(515));
         else
             $display("PASS [COMPILED_SUM_RESULT]: mem[512..515] = 15,0,0,0 (1+2+3+4+5=15)");
 

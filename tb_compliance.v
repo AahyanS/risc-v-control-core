@@ -56,10 +56,10 @@ module tb_compliance;
         // default unknown ('x') instead of the 0 a real system
         // guarantees at startup.
         for (i = 0; i < 8192; i = i + 1)
-            uut.dmem_inst.mem[i] = 8'd0;
+            uut.dmem_inst.poke(i, 8'd0);
 
         $readmemh(hexfile, uut.imem_inst.mem);
-        $readmemh(hexfile, uut.dmem_inst.mem);
+        uut.dmem_inst.load_hex(hexfile);
 
         @(negedge clk);
         @(posedge clk);
@@ -75,8 +75,8 @@ module tb_compliance;
         cycle_count = 0;
         while (result == 32'd0 && cycle_count < TIMEOUT_CYCLES) begin
             @(posedge clk); @(negedge clk);
-            result = {uut.dmem_inst.mem[16'h1FFF], uut.dmem_inst.mem[16'h1FFE],
-                      uut.dmem_inst.mem[16'h1FFD], uut.dmem_inst.mem[16'h1FFC]};
+            result = {uut.dmem_inst.peek(16'h1FFF), uut.dmem_inst.peek(16'h1FFE),
+                      uut.dmem_inst.peek(16'h1FFD), uut.dmem_inst.peek(16'h1FFC)};
             cycle_count = cycle_count + 1;
         end
 

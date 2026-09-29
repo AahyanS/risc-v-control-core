@@ -180,11 +180,11 @@ module tb_cpu;
         @(posedge clk); @(negedge clk);
         // SW doesn't write a register - check the memory word directly
         #1;
-        if (uut.dmem_inst.mem[100] !== 8'd42 || uut.dmem_inst.mem[101] !== 8'd0 ||
-            uut.dmem_inst.mem[102] !== 8'd0  || uut.dmem_inst.mem[103] !== 8'd0)
+        if (uut.dmem_inst.peek(100) !== 8'd42 || uut.dmem_inst.peek(101) !== 8'd0 ||
+            uut.dmem_inst.peek(102) !== 8'd0  || uut.dmem_inst.peek(103) !== 8'd0)
             $display("FAIL [SW_STORED_WORD]: mem[100..103] got=%0h %0h %0h %0h",
-                      uut.dmem_inst.mem[100], uut.dmem_inst.mem[101],
-                      uut.dmem_inst.mem[102], uut.dmem_inst.mem[103]);
+                      uut.dmem_inst.peek(100), uut.dmem_inst.peek(101),
+                      uut.dmem_inst.peek(102), uut.dmem_inst.peek(103));
         else
             $display("PASS [SW_STORED_WORD]: mem[100..103] = 42,0,0,0");
 
@@ -196,9 +196,9 @@ module tb_cpu;
 
         @(posedge clk); @(negedge clk);
         #1;
-        if (uut.dmem_inst.mem[104] !== 8'hFB)
+        if (uut.dmem_inst.peek(104) !== 8'hFB)
             $display("FAIL [SB_STORED_BYTE]: mem[104] got=%0h expected=fb",
-                      uut.dmem_inst.mem[104]);
+                      uut.dmem_inst.peek(104));
         else
             $display("PASS [SB_STORED_BYTE]: mem[104] = fb");
 

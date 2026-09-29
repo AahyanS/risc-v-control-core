@@ -774,14 +774,15 @@ argued for but measured. Files: `sw/interference_unlocked_test.s`,
       system than raw ALU throughput would be, but worth stating
       precisely rather than just quoting "21x faster."
 
-      Cost side NOT completed: PROJECT.md's own benchmark plan calls
-      for Fmax/LUT/FF utilization from real FPGA synthesis (Vivado),
-      to report whether the multiplier lengthens the critical path -
-      no synthesis toolchain (Vivado/Yosys/Quartus) is available in
-      this environment (checked, none found), so this genuinely can't
-      be answered here. Stays a real, open item for Phase 5 once that
-      toolchain is actually in the loop - reported as missing, not
-      guessed at or silently skipped. Files: `regfile.v`, `control.v`,
+      Cost side: left open here because no synthesis toolchain was
+      available yet, then answered in Phase 5 by the first Vivado
+      build - **the MAC is the critical path of the whole design.**
+      The slowest path runs from the forwarding comparison through
+      both cascaded DSP48E1 multiplier slices and the accumulate
+      carry chain into the EX/MEM register (18 logic levels, 17.8 ns),
+      limiting the core to about 55.5 MHz. So the ~21x win costs
+      clock speed; see the Phase 5 entry for the full numbers. Files:
+      `regfile.v`, `control.v`,
       `cpu_pipeline_cache_locked.v`, `sw/mac_test.s`, `tb_mac_test.v`,
       `sw/mac_benchmark.s`, `sw/software_mac_benchmark.c`,
       `tb_mac_benchmark.v`, `tb_software_mac_benchmark.v`.)
@@ -923,9 +924,58 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
     it. A negative control with the dummy boot clocks removed fails to
     boot, confirming both that the model reproduces the real quirk
     and that the workaround is what fixes it.
-- [ ] Bring-up on the physical board (`fpga/README.md` steps 2-5)
-- [ ] Real Fmax and utilization from Vivado (answers the MAC
-      critical-path question left open in Phase 4)
+- [x] Vivado 2026.1 installed and licensed (2026.1 needs a free,
+      node-locked "Vivado Basic" license even for Artix-7; Vivado only
+      found it via `XILINXD_LICENSE_FILE`). Step 2 bring-up
+      (switches → LEDs + blink) built, loaded over JTAG with
+      `fpga/program.tcl`, and confirmed working on the physical board.
+- [x] **First real synthesis found a problem simulation couldn't:**
+      `dmem.v` wrote up to four bytes of a single 8192 x 8 array per
+      store. Vivado can't build a RAM with four write ports, so it
+      fell back to 65,536 flip-flops - more than the XC7A35T's
+      ~41,600. Rewritten as four 2048 x 8 byte lanes with byte
+      enables, which map onto LUT RAM. The tradeoff: halfword/word
+      accesses must be naturally aligned (a misaligned one reads the
+      wrong bytes rather than trapping). Checked before committing to
+      it that every load/store in the rv32ui compliance tests,
+      including `ld_st`/`st_ld`, is aligned. 17 testbenches reached
+      into the old array directly; `dmem.v` now has simulation-only
+      `peek`/`poke`/`load_hex` helpers (excluded from synthesis with
+      `translate_off`) so testbenches don't depend on its layout.
+      `tb_dmem.v` only ever tested byte offset 0; 13 checks added for
+      offsets 1-3 and the upper halfword, since those go through the
+      new lane-selection logic. Compliance still 40/40 on both cores.
+- [x] `run_all_tests.sh`: runs all 39 testbenches (source lists
+      derived from each file's design under test), both compliance
+      suites, and the board simulation. Written because hand-picked
+      regression lists had already missed one broken testbench.
+- [x] **The CPU runs on real hardware.** Full design
+      (`cpu_pipeline_cache_locked` + board wrapper) built in Vivado,
+      flash image written with `fpga/program_flash.tcl`, and `hw_hello`
+      confirmed running on the Basys3 both ways: loaded over JTAG with
+      the program fetched from flash, and fully standalone (JP1 = QSPI,
+      power-cycle: the FPGA configures itself from flash and the CPU
+      executes in place from the same chip). The LED heartbeat proves
+      the whole instruction path works on silicon: STARTUPE2 boot
+      sequence, flash reads at the 3 MB offset, cache, pipeline, MMIO.
+  - **Utilization (XC7A35T):** 4,226 LUTs (20%) - of which 1,105 are
+    LUT RAM (the byte-lane data memory, 12% of LUT-RAM capacity) -
+    3,307 flip-flops (8%), 4 DSP48E1 (the MAC), 0 block RAM.
+  - **Timing:** 21.99 ns of slack at the 25 MHz system clock; the
+    worst path supports about 55.5 MHz. That path goes from the
+    forwarding comparison through the MAC's two cascaded DSP48E1
+    slices and the accumulate adder into EX/MEM - answering the
+    Phase 4 question: yes, the custom instruction sets the core's
+    maximum clock.
+  - **The board's flash is not the documented part.** Vivado read the
+    chip ID and found a Macronix MX25L3273F, not the Spansion
+    S25FL032P Digilent's documentation lists (newer Basys3 revisions
+    changed parts). It stopped before writing anything. Same 4 MB, same
+    3-byte-address 0x03 read (rated well above the 12.5 MHz used
+    here), so the design needed no change - only the part name in
+    `program_flash.tcl`, which now defaults to the Macronix part and
+    takes an override for older boards.
+- [ ] Encoder check by hand, then motor test (`fpga/README.md` steps 4-5)
 - [ ] Motor + encoder + driver integration
 - [ ] Measurement campaign across the three configurations
 - [ ] Portfolio writeup with scope/logic-analyzer evidence

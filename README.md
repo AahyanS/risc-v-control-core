@@ -116,10 +116,12 @@ fixed.
 Phases 0 through 4 (base ISA, pipeline, memory hierarchy, cache locking,
 control application — PID, peripherals, interrupts, the custom instruction)
 are complete and verified in simulation. Phase 5 (a Digilent Basys3, a
-Pmod DHB1 H-bridge, and an encoder-equipped gearmotor) is underway: the
-board design — executing in place from the same flash the FPGA boots
-from, through Xilinx's `STARTUPE2` primitive, with hardware-enforced
-H-bridge safety — is built and verified in a board-level simulation, and
+Pmod DHB1 H-bridge, and an encoder-equipped gearmotor) is underway. **The
+CPU runs on the physical board**, standalone: the FPGA configures itself
+from its onboard flash and the CPU executes in place from the same chip,
+through Xilinx's `STARTUPE2` primitive. On the XC7A35T it uses 20% of the
+logic and meets timing up to about 55.5 MHz; the custom MAC instruction
+is the critical path. Next is closed-loop motor control.
 [fpga/README.md](fpga/README.md) is the bench procedure. See
 [PROJECT.md](PROJECT.md) for the full checklist and design log.
 

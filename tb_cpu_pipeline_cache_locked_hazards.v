@@ -53,7 +53,7 @@ module tb_cpu_pipeline_cache_locked_hazards;
         reset = 1'b1;
 
         for (i = 0; i < 8192; i = i + 1)
-            uut.dmem_inst.mem[i] = 8'd0;
+            uut.dmem_inst.poke(i, 8'd0);
 
         $readmemh("sw/pipeline_hazard_test.hex", flash.mem);
 

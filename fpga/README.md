@@ -25,6 +25,17 @@ piece to look at.
 5. After installing, open a new terminal and check `vivado -version`
    works. If it doesn't, run the `settings64.bat` in the Vivado install
    folder, or add Vivado's `bin` folder to your PATH.
+6. **License (new in 2026.1).** Even the free tier needs a license file
+   now. In the **Vivado License Manager**, note your **Host ID** under
+   View Host Information (use the built-in Ethernet MAC; Wi-Fi MACs can
+   be randomized), then on AMD's Product Licensing site create a free,
+   node-locked **Vivado Basic Tier License** for that host ID and
+   download `Xilinx.lic`. Put it in `C:\Users\<you>\.Xilinx\` and point
+   Vivado at it with the user environment variable
+   `XILINXD_LICENSE_FILE` (License Manager → Manage License Search
+   Paths). On this install Vivado didn't find the file in `.Xilinx`
+   on its own; the environment variable is what made it work. The
+   license renews yearly.
 
 If builds hit odd "file locked" errors, OneDrive is syncing
 `fpga/build/` mid-build - pause OneDrive sync while building.
@@ -37,8 +48,13 @@ If builds hit odd "file locked" errors, OneDrive is syncing
    ```
    vivado -mode batch -source fpga/build.tcl -tclargs bringup
    ```
-4. Open Vivado → **Open Hardware Manager** → **Open Target → Auto Connect**
-   → **Program Device**, and pick `fpga/build/bringup/bringup_top.bit`.
+4. Load it onto the board, either from the command line:
+   ```
+   vivado -mode batch -source fpga/program.tcl -tclargs fpga/build/bringup/bringup_top.bit
+   ```
+   or in the GUI: **Open Hardware Manager** → **Open Target → Auto
+   Connect** → **Program Device**, and pick
+   `fpga/build/bringup/bringup_top.bit`.
 
 **Expected:** LD15 blinks; LD0-LD14 follow SW0-SW14; holding the center
 button freezes the blink. If that works, the toolchain, cable, and board
@@ -57,13 +73,22 @@ the FPGA bitstream. One `.mcs` file holds both.
    Note the "Achievable frequency" printed at the end, and keep
    `fpga/build/core/timing_worst_20_paths.rpt` and `utilization.rpt` -
    those are the real Fmax and resource numbers for PROJECT.md.
-2. In the Hardware Manager: right-click the device → **Add Configuration
-   Memory Device** → **Spansion, s25fl032p-spi-x1_x2_x4** (check the flash
-   chip's marking on the board if the programmer reports a mismatch).
-3. Right-click the memory device → **Program Configuration Memory Device**,
-   select `fpga/build/core/basys3_flash.mcs`, and program.
-4. Power off, set **JP1** to **QSPI**, power on. The FPGA now loads itself
-   from flash and the CPU starts running from the same chip.
+2. Write the flash image and start the CPU:
+   ```
+   vivado -mode batch -source fpga/program_flash.tcl -tclargs fpga/build/core/basys3_flash.mcs fpga/build/core/basys3_top.bit
+   ```
+   This erases, writes, and verifies the flash, then loads the CPU over
+   JTAG. The script defaults to the **Macronix MX25L3273F**, which is what
+   this project's board has, even though Digilent's documentation lists a
+   Spansion S25FL032P (older boards). If Vivado reports a part mismatch,
+   it has read the chip's ID and stopped before writing anything; pass
+   the part it detected as a third argument (for example
+   `s25fl032p-spi-x1_x2_x4`). In the GUI instead: Hardware Manager →
+   right-click the device → **Add Configuration Memory Device** → pick
+   the part → **Program Configuration Memory Device**.
+3. To run standalone: power off, set **JP1** to **QSPI**, power on. The
+   FPGA loads itself from flash and the CPU starts running from the same
+   chip, with no laptop involved.
 
 **Expected:** LD15-LD8 count up a few times a second (the CPU is
 running). LD7-LD0 are the encoder position - they'll only change once

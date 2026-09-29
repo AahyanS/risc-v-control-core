@@ -57,12 +57,12 @@ module tb_dmem;
     task check_byte(input [31:0] byte_addr, input [7:0] exp_byte,
                      input [63:0] opname);
         begin
-            if (uut.mem[byte_addr] !== exp_byte)
+            if (uut.peek(byte_addr) !== exp_byte)
                 $display("FAIL [%0s]: mem[%0d] got=%0h expected=%0h",
-                          opname, byte_addr, uut.mem[byte_addr], exp_byte);
+                          opname, byte_addr, uut.peek(byte_addr), exp_byte);
             else
                 $display("PASS [%0s]: mem[%0d]=%0h",
-                          opname, byte_addr, uut.mem[byte_addr]);
+                          opname, byte_addr, uut.peek(byte_addr));
         end
     endtask
 
@@ -155,6 +155,40 @@ module tb_dmem;
         // byte/halfword stores that came after it
         addr = 32'd8; funct3 = LW;
         check_read(32'hDEADBEEF, "NO_CORRUPTION_ADDR_8");
+
+        // ---- Every byte position within a word ----
+        // The memory is four byte lanes, so bytes at offsets 1-3 go
+        // through different selection logic than offset 0 - each gets
+        // its own check, and each partial write must leave the word's
+        // other bytes alone.
+        write_mem(32'd24, 32'h11223344, SW);
+        write_mem(32'd25, 32'h000000AA, SB);
+        check_byte(32'd24, 8'h44, "SB_OFF1_KEEPS_BYTE0");
+        check_byte(32'd25, 8'hAA, "SB_OFF1_WRITES_BYTE1");
+        check_byte(32'd26, 8'h22, "SB_OFF1_KEEPS_BYTE2");
+        check_byte(32'd27, 8'h11, "SB_OFF1_KEEPS_BYTE3");
+        addr = 32'd25; funct3 = LB;
+        check_read(32'hFFFFFFAA, "LB_OFFSET_1");
+        addr = 32'd26; funct3 = LBU;
+        check_read(32'h00000022, "LBU_OFFSET_2");
+
+        write_mem(32'd27, 32'h00000080, SB);
+        addr = 32'd27; funct3 = LB;
+        check_read(32'hFFFFFF80, "LB_OFFSET_3_SIGN_EXTENDS");
+        addr = 32'd24; funct3 = LW;
+        check_read(32'h8022AA44, "LW_AFTER_BYTE_WRITES");
+
+        // ---- Halfword at offset 2 (the upper half of a word) ----
+        write_mem(32'd28, 32'h55667788, SW);
+        write_mem(32'd30, 32'h00008001, SH);
+        check_byte(32'd28, 8'h88, "SH_OFF2_KEEPS_BYTE0");
+        check_byte(32'd29, 8'h77, "SH_OFF2_KEEPS_BYTE1");
+        addr = 32'd30; funct3 = LH;
+        check_read(32'hFFFF8001, "LH_OFFSET_2_SIGN_EXTENDS");
+        addr = 32'd30; funct3 = LHU;
+        check_read(32'h00008001, "LHU_OFFSET_2");
+        addr = 32'd28; funct3 = LW;
+        check_read(32'h80017788, "LW_AFTER_UPPER_HALF_WRITE");
 
         $display("Testbench complete.");
         $finish;

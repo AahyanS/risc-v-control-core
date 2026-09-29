@@ -37,8 +37,8 @@ module tb_interrupt_test;
     always #5 clk = ~clk;
 
     function [31:0] peek_result(input [31:0] offset);
-        peek_result = {uut.dmem_inst.mem[offset+3], uut.dmem_inst.mem[offset+2],
-                        uut.dmem_inst.mem[offset+1], uut.dmem_inst.mem[offset+0]};
+        peek_result = {uut.dmem_inst.peek(offset+3), uut.dmem_inst.peek(offset+2),
+                        uut.dmem_inst.peek(offset+1), uut.dmem_inst.peek(offset+0)};
     endfunction
 
     initial begin

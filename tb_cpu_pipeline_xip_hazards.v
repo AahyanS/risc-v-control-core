@@ -56,7 +56,7 @@ module tb_cpu_pipeline_xip_hazards;
         // Data memory (dmem) is still on-chip BRAM, unchanged - flash
         // only replaces instruction fetch.
         for (i = 0; i < 8192; i = i + 1)
-            uut.dmem_inst.mem[i] = 8'd0;
+            uut.dmem_inst.poke(i, 8'd0);
 
         $readmemh("sw/pipeline_hazard_test.hex", flash.mem);
 
