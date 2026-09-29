@@ -945,7 +945,8 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
       `tb_dmem.v` only ever tested byte offset 0; 13 checks added for
       offsets 1-3 and the upper halfword, since those go through the
       new lane-selection logic. Compliance still 40/40 on both cores.
-- [x] `run_all_tests.sh`: runs all 39 testbenches (source lists
+- [x] `run_all_tests.sh`: runs all testbenches (39 at the time; 40
+      with `tb_uart_tx.v`) (source lists
       derived from each file's design under test), both compliance
       suites, and the board simulation. Written because hand-picked
       regression lists had already missed one broken testbench.
@@ -975,7 +976,61 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
     here), so the design needed no change - only the part name in
     `program_flash.tcl`, which now defaults to the Macronix part and
     takes an override for older boards.
-- [ ] Encoder check by hand, then motor test (`fpga/README.md` steps 4-5)
+- [ ] Encoder check by hand, then motor test (`fpga/README.md` steps 4-5).
+      In progress. The first hand-turn check showed LD7-LD0 never
+      changing, and was narrowed down step by step with the multimeter
+      rather than by rewiring at random: J7 had 3.3 V (DHB1 powered);
+      grounding J7's A input with a jumper toggled the LEDs (DHB1
+      buffers, JB, pin constraints, and decoder all good); but the
+      encoder outputs only swung 3.3 V ↔ 3.0 V, never low - an
+      encoder that's powered but can't sink current, i.e. a bad
+      ground connection. After reseating, the LED pattern identified
+      which channel was still missing without any probing: with only
+      B switching, the count goes 0 ↔ +1 (LD0 alone flickers); with
+      only A switching, it goes 0 ↔ −1 (all eight LEDs flip together,
+      since −1 is 0xFF). The yellow (A) wire's solder joint needs
+      redoing.
+- [x] **UART output, and the headline result reproduced on the real
+      board.** The LEDs can't carry a 32-bit cycle count, so the core
+      gained a UART transmitter (`uart_tx.v`, 8N1 at 115200 baud =
+      217 cycles/bit at 25 MHz) at MMIO `0xFFFFFF30` (store sends a
+      byte, load returns busy), wired to pin A18 - the Basys3's
+      FT2232 second channel, so the output arrives on a COM port over
+      the same USB cable used for programming. No new hardware.
+      `tb_uart_tx.v` checks only the tx pin, the way a PC sees it:
+      mid-bit sampling, exact bit lengths, back-to-back bytes, a start
+      while busy being ignored, and the real 217-cycle setting.
+      Mutation check: making every bit one cycle long fails 8 of its
+      13 checks.
+
+      `sw/hw_cache_lock.s` runs the interference experiment both ways
+      on one core (unlocked = lock bit clear) once a second and prints
+      the results. Its layout matters: `hot_loop` (0x100) and
+      `interference` (0x200) share cache index 0, and the measuring
+      code must not, or locking would make the measuring code itself
+      uncacheable; `fpga/build_programs.sh` checks the linked address
+      of `measure_end` on every build. A new board-simulation mode
+      decodes the UART pin back into text and checks the printed
+      numbers against the CPU's registers and the core-level results.
+      That caught three bugs before hardware: an assembler `.irpc`
+      macro that printed every letter as `k` (GAS doesn't substitute
+      inside `'x` character literals), the timed routines' dummy work
+      writing into the registers holding results, and - in the
+      testbench, not the design - off-by-one cycle counting. Built
+      (timing met, 52.9 MHz achievable - placement variation from
+      55.5, same MAC critical path), flashed, and read from COM4:
+
+      ```
+      run 9: unlocked 531-531 cycles, locked 10-10 cycles
+      run 10: unlocked 531-531 cycles, locked 10-10 cycles
+      ```
+
+      Identical to simulation, cycle for cycle: on real silicon
+      fetching from the real Macronix flash, the unlocked hot path
+      misses on every call under interference and the locked one hits
+      on every call, with zero variation in either. The project's
+      central claim is now a hardware measurement, not only a
+      simulated one.
 - [ ] Motor + encoder + driver integration
 - [ ] Measurement campaign across the three configurations
 - [ ] Portfolio writeup with scope/logic-analyzer evidence
@@ -986,8 +1041,9 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
 - VS Code + "Verilog-HDL/SystemVerilog" extension
 - Git + a GitHub repo for version control
 - Target board: Digilent Basys3 (Xilinx Artix-7 XC7A35T) - in hand.
-  Vivado not installed yet (needs an AMD account; install steps in
-  `fpga/README.md`).
+  Vivado 2026.1 at `C:\AMDDesignTools\2026.1` (free Basic license; set
+  `XILINXD_LICENSE_FILE` - see `fpga/README.md`). Board serial output
+  appears on COM4 at 115200 baud.
 - RISC-V GNU toolchain: xPack `riscv-none-elf-gcc` 15.2.0, installed at
   `C:\riscv-toolchain\`, on PATH. Early modules used hand-written hex
   instructions in testbenches; real programs are compiled now.

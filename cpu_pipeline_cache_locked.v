@@ -47,13 +47,16 @@
 // run on real hardware without a debugger. motor_dir: bit 0 of
 // 0xFFFFFF2C (read/write), the direction software is requesting - the
 // board top (fpga/basys3_top.v) passes it through motor_dir_guard.v
-// before it reaches the H-bridge, never directly.
+// before it reaches the H-bridge, never directly. uart_tx: a UART
+// transmitter (uart_tx.v) at 0xFFFFFF30, so programs can print their
+// measurements to a PC over the Basys3's USB cable.
 //
 // FLASH_BASE offsets every instruction fetch in flash (see
 // spi_flash_ctrl.v); 0 in simulation, set by the board top on hardware.
 
 module cpu_pipeline_cache_locked #(
-    parameter [23:0] FLASH_BASE = 24'h000000
+    parameter [23:0] FLASH_BASE = 24'h000000,
+    parameter        UART_CLKS_PER_BIT = 217     // 25 MHz / 115200 baud
 ) (
     input clk,
     input reset,
@@ -73,7 +76,8 @@ module cpu_pipeline_cache_locked #(
 
     // Board-facing outputs
     output reg [15:0] led,
-    output reg        motor_dir
+    output reg        motor_dir,
+    output            uart_tx
 );
 
     localparam [31:0] MMIO_LOCK_ADDR    = 32'hFFFFFF00;
@@ -667,6 +671,9 @@ module cpu_pipeline_cache_locked #(
     //   0xFFFFFF24 - timer count (read-only diagnostic)
     //   0xFFFFFF28 - board LEDs, low 16 bits (read/write)
     //   0xFFFFFF2C - motor direction request, bit 0 (read/write)
+    //   0xFFFFFF30 - UART transmit: a store sends the low 8 bits;
+    //                a load returns busy in bit 0 (poll until 0
+    //                before storing - a store while busy is dropped)
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -678,6 +685,7 @@ module cpu_pipeline_cache_locked #(
     localparam [31:0] MMIO_TIMER_COUNT_ADDR  = 32'hFFFFFF24;
     localparam [31:0] MMIO_LED_ADDR          = 32'hFFFFFF28;
     localparam [31:0] MMIO_MOTOR_DIR_ADDR    = 32'hFFFFFF2C;
+    localparam [31:0] MMIO_UART_ADDR         = 32'hFFFFFF30;
 
     wire is_mmio_lock_write    = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
     wire is_mmio_cycle_addr    = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
@@ -691,12 +699,14 @@ module cpu_pipeline_cache_locked #(
     wire is_mmio_timer_count   = (ex_mem_alu_result == MMIO_TIMER_COUNT_ADDR);
     wire is_mmio_led           = (ex_mem_alu_result == MMIO_LED_ADDR);
     wire is_mmio_motor_dir     = (ex_mem_alu_result == MMIO_MOTOR_DIR_ADDR);
+    wire is_mmio_uart          = (ex_mem_alu_result == MMIO_UART_ADDR);
     wire is_mmio_addr          = is_mmio_lock_write || is_mmio_cycle_addr ||
                                   is_mmio_hit_addr || is_mmio_miss_addr ||
                                   is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
                                   is_mmio_pwm_addr || is_mmio_timer_cmp ||
                                   is_mmio_timer_ack || is_mmio_timer_count ||
-                                  is_mmio_led || is_mmio_motor_dir;
+                                  is_mmio_led || is_mmio_motor_dir ||
+                                  is_mmio_uart;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -750,6 +760,17 @@ module cpu_pipeline_cache_locked #(
         .pending(timer_pending)
     );
 
+    wire uart_busy;
+
+    uart_tx #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) uart_tx_inst (
+        .clk(clk),
+        .reset(reset),
+        .data(ex_mem_rs2_data[7:0]),
+        .start(ex_mem_mem_write && is_mmio_uart),
+        .tx(uart_tx),
+        .busy(uart_busy)
+    );
+
     wire [31:0] mem_dmem_read_data;
     wire [31:0] mem_read_data_muxed =
         is_mmio_cycle_addr    ? cycle_count :
@@ -763,6 +784,7 @@ module cpu_pipeline_cache_locked #(
         is_mmio_timer_count   ? timer_count :
         is_mmio_led           ? {16'd0, led} :
         is_mmio_motor_dir     ? {31'd0, motor_dir} :
+        is_mmio_uart          ? {31'd0, uart_busy} :
                                 mem_dmem_read_data;
 
     dmem dmem_inst (

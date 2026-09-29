@@ -30,3 +30,14 @@ build() {
 
 build hw_hello      "-Wa,--defsym,DELAY=20"
 build hw_motor_test "-Wa,--defsym,RUN_ITERS=40 -Wa,--defsym,STOP_ITERS=15"
+build hw_cache_lock "-Wa,--defsym,DELAY=50"
+
+# hw_cache_lock's timed code must not share hot_loop's cache line
+# index (see the header of sw/hw_cache_lock.s): measure has to end by
+# 0x300.
+end=$(riscv-none-elf-nm sw/hw_cache_lock.elf | awk '$3 == "measure_end" { print $1 }')
+if [ $((16#$end)) -gt $((16#300)) ]; then
+    echo "ERROR: hw_cache_lock measure ends at 0x$end, past 0x300"
+    exit 1
+fi
+echo "hw_cache_lock layout OK: measure ends at 0x$end"

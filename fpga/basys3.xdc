@@ -45,6 +45,9 @@ set_property -dict { PACKAGE_PIN A17 IOSTANDARD LVCMOS33 } [get_ports dhb1_dir2]
 set_property -dict { PACKAGE_PIN B15 IOSTANDARD LVCMOS33 } [get_ports enc_a]
 set_property -dict { PACKAGE_PIN B16 IOSTANDARD LVCMOS33 } [get_ports enc_b]
 
+## ---- USB-UART: FPGA transmit to the PC (FT2232 channel B RXD) ----
+set_property -dict { PACKAGE_PIN A18 IOSTANDARD LVCMOS33 } [get_ports uart_txd]
+
 ## ---- Onboard QSPI flash ----
 ## The flash clock (CCLK) is not listed: it's a dedicated configuration
 ## pin driven through the STARTUPE2 primitive in basys3_top.v.
@@ -57,14 +60,15 @@ set_property -dict { PACKAGE_PIN F18 IOSTANDARD LVCMOS33 } [get_ports qspi_dq3]
 ## ---- Timing exceptions ----
 ## Button, switch, and encoder inputs are asynchronous and each passes
 ## through a two-flop synchronizer. LED and motor outputs have no
-## timing requirement. The flash interface runs at 12.5 MHz with a full
+## timing requirement (nor does the UART output, which changes once
+## per 217 cycles). The flash interface runs at 12.5 MHz with a full
 ## 40 ns clk period between the flash updating MISO and this design
 ## sampling it (see the header of basys3_top.v), so it is left out of
 ## the timing analysis rather than modelled with I/O delays - the
 ## timing report then reflects the core's own internal paths, which is
 ## the Fmax question the project needs answered.
 set_false_path -from [get_ports {btnC sw15 enc_a enc_b qspi_dq1}]
-set_false_path -to   [get_ports {led[*] dhb1_* qspi_*}]
+set_false_path -to   [get_ports {led[*] dhb1_* qspi_* uart_txd}]
 
 ## ---- Configuration: boot from the onboard QSPI flash ----
 set_property CONFIG_VOLTAGE 3.3 [current_design]

@@ -44,18 +44,26 @@
 //
 // ---- LEDs ----
 // LD0-LD15 show the CPU's LED register (0xFFFFFF28).
+//
+// ---- Serial output ----
+// uart_txd goes to the Basys3's USB-UART bridge (FTDI FT2232, second
+// channel), so the CPU's UART register (0xFFFFFF30) prints to a serial
+// terminal on the PC over the same USB cable used for programming:
+// 115200 baud, 8 data bits, no parity, 1 stop bit.
 
 module basys3_top #(
     parameter [23:0] FLASH_BASE      = 24'h300000,
     parameter        MMCM_OUT_DIVIDE = 40,      // 1000 MHz VCO / 40 = 25 MHz
     parameter        MOTOR_DEAD      = 2500,    // cycles per guard phase = 100 us at 25 MHz
-    parameter        BOOT_DUMMY_CLKS = 8
+    parameter        BOOT_DUMMY_CLKS = 8,
+    parameter        UART_CLKS_PER_BIT = 217    // 25 MHz / 115200 baud
 ) (
     input         clk,        // 100 MHz oscillator (W5)
     input         btnC,       // reset button
     input         sw15,       // motor arm switch
 
     output [15:0] led,
+    output        uart_txd,   // to the USB-UART bridge (A18)
 
     // Pmod DHB1 on JB
     output        dhb1_en1,
@@ -153,7 +161,10 @@ module basys3_top #(
     wire cpu_sck, cpu_cs_n, cpu_mosi;
     wire pwm_raw, motor_dir_req;
 
-    cpu_pipeline_cache_locked #(.FLASH_BASE(FLASH_BASE)) u_cpu (
+    cpu_pipeline_cache_locked #(
+        .FLASH_BASE        (FLASH_BASE),
+        .UART_CLKS_PER_BIT (UART_CLKS_PER_BIT)
+    ) u_cpu (
         .clk       (sys_clk),
         .reset     (cpu_reset),
         .sck       (cpu_sck),
@@ -164,7 +175,8 @@ module basys3_top #(
         .enc_b     (enc_b),
         .pwm_out   (pwm_raw),
         .led       (led),
-        .motor_dir (motor_dir_req)
+        .motor_dir (motor_dir_req),
+        .uart_tx   (uart_txd)
     );
 
     // ================= Flash pins =================

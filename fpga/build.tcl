@@ -29,7 +29,7 @@ if {$target eq "bringup"} {
 } elseif {$target eq "core"} {
     set top basys3_top
     foreach f {alu.v regfile.v control.v pc.v dmem.v spi_flash_ctrl.v
-               icache.v quad_decoder.v pwm.v timer.v motor_dir_guard.v
+               icache.v quad_decoder.v pwm.v timer.v uart_tx.v motor_dir_guard.v
                cpu_pipeline_cache_locked.v fpga/basys3_top.v} {
         read_verilog [file join $root $f]
     }

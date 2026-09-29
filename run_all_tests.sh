@@ -19,7 +19,7 @@ declare -A SRC=(
     [cpu_pipeline]="$CORE imem.v dmem.v cpu_pipeline.v"
     [cpu_pipeline_xip]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v cpu_pipeline_xip.v"
     [cpu_pipeline_cache]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v cpu_pipeline_cache.v"
-    [cpu_pipeline_cache_locked]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v quad_decoder.v pwm.v timer.v cpu_pipeline_cache_locked.v"
+    [cpu_pipeline_cache_locked]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v quad_decoder.v pwm.v timer.v uart_tx.v cpu_pipeline_cache_locked.v"
     [spi_flash_ctrl]="spi_flash_ctrl.v spi_flash_model.v"
 )
 
@@ -74,8 +74,8 @@ echo
 echo "=== Board-level simulation ==="
 board=$(bash fpga/sim/run_board_sim.sh 2>&1)
 echo "$board" | grep -E "^===|ALL CHECKS|CHECK\(S\) FAILED"
-# Expected: two passing runs, then the negative control failing.
-if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 2 ] || \
+# Expected: three passing runs, then the negative control failing.
+if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 3 ] || \
    [ "$(echo "$board" | grep -c "CHECK(S) FAILED")" -ne 1 ]; then
     bad+=("board sim")
     total_fail=$((total_fail + 1))

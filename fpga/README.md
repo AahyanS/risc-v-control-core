@@ -10,6 +10,7 @@ piece to look at.
 | `basys3_top.v`, `basys3.xdc` | The real design: CPU + clocking + flash boot + motor safety |
 | `build.tcl` | Vivado batch build (bitstream, flash image, reports) |
 | `build_programs.sh` | Builds the hardware test programs (`sw/hw_*.bin`) |
+| `program.tcl`, `program_flash.tcl` | Load a `.bit` over JTAG / write the flash image |
 | `sim/` | Board-level simulation of `basys3_top.v` (run `bash fpga/sim/run_board_sim.sh`) |
 
 ## 1. Install Vivado
@@ -99,6 +100,34 @@ over JTAG without touching flash - the program already stored at 3 MB
 stays put. To change only the program, rebuild with a different `.bin`
 and reprogram the `.mcs`.
 
+## 3b. Measurements over USB serial
+
+The CPU has a UART transmitter (register `0xFFFFFF30`) wired to the
+Basys3's USB-UART bridge, so programs can print to the PC over the
+same micro-USB cable - no extra hardware. It shows up as a COM port
+(COM4 on this project's laptop; check Device Manager → Ports).
+Settings: **115200 baud, 8 data bits, no parity, 1 stop bit.**
+
+The cache-locking experiment runs this way:
+```
+bash fpga/build_programs.sh
+vivado -mode batch -source fpga/build.tcl -tclargs core sw/hw_cache_lock.bin
+vivado -mode batch -source fpga/program_flash.tcl -tclargs fpga/build/core/basys3_flash.mcs fpga/build/core/basys3_top.bit
+```
+Then open a serial terminal (PuTTY → Serial, COM4, 115200), or in
+PowerShell (Ctrl+C to stop):
+```
+$p=New-Object System.IO.Ports.SerialPort COM4,115200; $p.Open(); while($true){$p.ReadLine()}
+```
+
+**Expected:** a line about once a second, and LD15-LD0 counting runs:
+```
+run 9: unlocked 531-531 cycles, locked 10-10 cycles
+```
+Only one program can hold the COM port open at a time. Vivado's
+programming uses the bridge's other channel, so programming works
+with a terminal open.
+
 ## 4. Wiring the motor and encoder
 
 Do every step with the Basys3 **powered off** and the motor supply
@@ -161,7 +190,23 @@ terminal: **VM** (+) and **GND** (−).
 
 **Check the encoder first, motor unpowered:** power the Basys3 with the
 `hw_hello` image from step 3 and turn the motor shaft by hand. LD7-LD0
-should count up turning one way and down turning the other.
+should count up turning one way and down turning the other. (With the
+50:1 gearbox, one turn of the output shaft is about 600 counts, so
+the LEDs move fast.)
+
+If it doesn't count, the LED pattern says which part is missing:
+- **Nothing changes:** no signal is getting through. Measure J7 pin 4
+  to pin 3 (should be 3.3 V). Then, with the yellow wire off, tap a
+  jumper from J7 pin 3 (GND) onto pin 1: if the LEDs flip, the DHB1
+  and FPGA side are fine and the problem is the encoder or its wires.
+- **Only LD0 flickers:** only channel B (white) is switching; the
+  count just goes 0 ↔ +1.
+- **All eight LEDs flip together:** only channel A (yellow) is
+  switching; the count goes 0 ↔ −1, which is 0xFF.
+- **A/B measured at J7 only swing between ~3.3 V and ~3.0 V:** the
+  encoder is powered but can't pull its outputs low - usually a bad
+  ground (green wire) connection or a connector not fully seated on
+  the motor.
 
 ## 5. Motor test
 
@@ -189,6 +234,8 @@ A/B wiring. Flip SW15 down at any time to stop the motor.
 `bash fpga/sim/run_board_sim.sh` simulates this exact design - MMCM,
 reset, the STARTUPE2 flash path (including the three flash clocks that
 are lost after configuration), the CPU fetching from 3 MB into flash,
-the LEDs, the encoder, and the motor safety chain - with both programs.
+the LEDs, the encoder, the motor safety chain, and the UART (decoded
+back into text and checked against the CPU's registers) - with all
+three hardware programs.
 It also runs a negative control with the boot workaround removed, which
 fails, confirming the workaround is what makes booting work.

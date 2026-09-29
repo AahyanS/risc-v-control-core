@@ -15,7 +15,16 @@ That argument is backed by measurement, not just made:
 | under identical competing memory traffic | 531 cycles (every time) | 10 cycles (every time) |
 
 Same hardware, same interference, only a lock bit differing — a 53x speedup
-and the jitter eliminated entirely, not just reduced. See
+and the jitter eliminated entirely, not just reduced. Measured first in
+simulation, then reproduced cycle-for-cycle on the physical FPGA, which
+reports its own results over USB serial:
+
+```
+run 9: unlocked 531-531 cycles, locked 10-10 cycles
+run 10: unlocked 531-531 cycles, locked 10-10 cycles
+```
+
+See
 [Results](#results) below for how this was measured, and [PROJECT.md](PROJECT.md)
 for the full build log.
 
@@ -63,7 +72,9 @@ abstract.
   routine), the unlocked cache misses on *every single call* (531 cycles,
   uniformly) while the locked cache hits on *every single call* (10 cycles,
   uniformly) — a 53x speedup and zero variance, from the same interference,
-  with only a lock bit differing.
+  with only a lock bit differing. The same experiment on the physical
+  Basys3, fetching from its real flash chip (`sw/hw_cache_lock.s`),
+  prints identical numbers.
 - **The branch predictor already sits at its ceiling.** On a representative
   control-loop shape (one tight backward branch, 1000 iterations), the 2-bit
   predictor achieves 99.8% accuracy — exactly 2 mispredictions (one
@@ -120,8 +131,10 @@ Pmod DHB1 H-bridge, and an encoder-equipped gearmotor) is underway. **The
 CPU runs on the physical board**, standalone: the FPGA configures itself
 from its onboard flash and the CPU executes in place from the same chip,
 through Xilinx's `STARTUPE2` primitive. On the XC7A35T it uses 20% of the
-logic and meets timing up to about 55.5 MHz; the custom MAC instruction
-is the critical path. Next is closed-loop motor control.
+logic and meets timing up to about 53-55 MHz; the custom MAC instruction
+is the critical path. A UART transmitter lets programs print their
+measurements to a PC, and the cache-locking result above has been
+reproduced on the board. Next is closed-loop motor control.
 [fpga/README.md](fpga/README.md) is the bench procedure. See
 [PROJECT.md](PROJECT.md) for the full checklist and design log.
 
@@ -131,7 +144,8 @@ is the critical path. Next is closed-loop motor control.
   cache-configuration experiment cores), `alu.v`, `regfile.v`, `control.v`,
   `pc.v`
 - Memory hierarchy: `spi_flash_ctrl.v`, `icache.v`, `imem.v`, `dmem.v`
-- Peripherals: `quad_decoder.v`, `pwm.v`, `timer.v`, `motor_dir_guard.v`
+- Peripherals: `quad_decoder.v`, `pwm.v`, `timer.v`, `motor_dir_guard.v`,
+  `uart_tx.v`
 - Board: `fpga/` — Basys3 top level, pin constraints, Vivado build
   script, board-level simulation, and the bring-up procedure
 - Software: `sw/` — PID controller (`pid.c`/`pid.h`), test/benchmark
