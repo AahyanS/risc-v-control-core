@@ -84,6 +84,7 @@ module cpu_pipeline_xip (
         .reset(reset),
         .addr(pc_curr[23:0]),
         .req(flash_req),
+        .abort(1'b0),
         .ready(flash_ready),
         .rdata(flash_rdata),
         .busy(flash_busy),

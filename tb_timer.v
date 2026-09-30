@@ -15,12 +15,13 @@ module tb_timer;
     reg clk, reset;
     reg [31:0] compare;
     reg clear_pending;
+    reg restart = 1'b0;
     wire [31:0] count;
     wire pending;
 
     timer uut (
         .clk(clk), .reset(reset),
-        .compare(compare), .clear_pending(clear_pending),
+        .compare(compare), .clear_pending(clear_pending), .restart(restart),
         .count(count), .pending(pending)
     );
 
@@ -104,6 +105,39 @@ module tb_timer;
             $display("FAIL [NEW_MATCH_WINS_RACE]: pending=0, expected 1 - a same-cycle clear suppressed a real interrupt");
         else
             $display("PASS [NEW_MATCH_WINS_RACE]: new match wins even with clear_pending held the same cycle");
+
+        // ---- restart: shrinking the period while count is already
+        //      past the new compare value ----
+        @(negedge clk);
+        clear_pending = 1'b0;
+        compare = 32'd1000;
+        restart = 1'b1; @(negedge clk); restart = 1'b0;
+        clear_pending = 1'b1; @(negedge clk); clear_pending = 1'b0;
+        for (i = 0; i < 500; i = i + 1) @(negedge clk);   // count ~500
+        compare = 32'd99;                                   // now < count
+        restart = 1'b1; @(negedge clk); restart = 1'b0;
+        if (count !== 32'd0)
+            $display("FAIL [RESTART_ZEROES_COUNT]: count=%0d after restart, expected 0", count);
+        else
+            $display("PASS [RESTART_ZEROES_COUNT]: count restarted from 0 with the new period");
+        for (i = 0; i < 99; i = i + 1) @(negedge clk);
+        if (pending !== 1'b0)
+            $display("FAIL [RESTART_NEW_PERIOD_EXACT]: fired early");
+        else begin
+            @(negedge clk);
+            if (pending !== 1'b1)
+                $display("FAIL [RESTART_NEW_PERIOD_EXACT]: did not fire 100 cycles after restart (count=%0d) - would have run to 2^32",
+                         count);
+            else
+                $display("PASS [RESTART_NEW_PERIOD_EXACT]: fired exactly one new period (100 cycles) after restart");
+        end
+
+        // ---- restart leaves a real pending event alone ----
+        restart = 1'b1; @(negedge clk); restart = 1'b0;
+        if (pending !== 1'b1)
+            $display("FAIL [RESTART_KEEPS_PENDING]: restart cleared an event that really happened");
+        else
+            $display("PASS [RESTART_KEEPS_PENDING]: pending survives a restart until software acknowledges it");
 
         $display("Testbench complete.");
         $finish;

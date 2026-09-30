@@ -1031,8 +1031,112 @@ JST SH encoder cable. Bench procedure: `fpga/README.md`.
       on every call, with zero variation in either. The project's
       central claim is now a hardware measurement, not only a
       simulated one.
+- [x] **Measurement campaign: the real control loop, all three
+      configurations, on hardware** (`sw/hw_control_loop.s`). A timer
+      interrupt runs one PID step (read encoder, PID, write direction
+      and PWM, acknowledge); between ticks a 320-byte background task
+      runs - bigger than the 256-byte cache, so it touches every line,
+      standing in for whatever else a controller does. Per
+      configuration: response time (tick to handler finished, read from
+      the timer's own count) min/mean/max over 256 ticks at 500 Hz, and
+      the maximum loop rate - the shortest period with zero missed
+      deadlines, found by binary search. One bitstream, one program;
+      only control registers differ. Final results on the Basys3:
+
+      | | response min / mean / max | max loop rate | background work |
+      |---|---|---|---|
+      | no cache | 3701 / 3701 / 3701 cycles | 4,698 Hz | 1062 |
+      | cache | 4229 / 4229 / 4231 cycles | 5,886 Hz | 1921 |
+      | cache + locked handler | 61 / 61 / 65 cycles | 100,401 Hz | 1459 |
+
+      Identical every round - nothing in the system varies run to run.
+      Predictions were written before any run. Held: under realistic
+      background traffic the unlocked cache is *worse* in the worst case
+      than no cache at all (the background evicts the handler every
+      time, and refilling whole 4-word lines costs more than fetching
+      the words it actually runs), so the average-case benefit of a
+      cache vanishes exactly where a control loop needs it; and locking
+      costs the background task about a quarter of its throughput
+      (1459 vs 1921), since its code aliasing the 12 locked lines can no
+      longer be cached. Wrong: I predicted 60-100 cycle locked
+      responses, and the first run measured 137-319 (72.7 kHz) - which
+      led to the interrupt-latency work below.
+
+      What the campaign needed along the way:
+  - **Cache disable bit** (MMIO `0xFFFFFF34`): every fetch takes the
+    bypass path - Configuration 1 at runtime. Measured one-word read
+    131 cycles, 4-word line fill 522, hit 1 (`tb_icache_disable.v`).
+  - **Timer restart on compare write** (`timer.v`): shrinking the period
+    while the count was already past the new value let it run to 2^32
+    (~171 s) before the next tick. Found while designing the sweep.
+  - **PID in assembly with MAC** (`sw/pid_mac.inc`): the C PID plus
+    libgcc's 64-bit multiply is far bigger than the cache, so it can't
+    be locked; the macro version is 23 instructions. Checked against
+    `pid_step()` by a differential test (`sw/pid_mac_test.c`,
+    `tb_pid_mac_test.v`): 100 steps, random and closed-loop, output and
+    both state variables identical every step, all five saturation /
+    anti-windup branches covered. Flipping one anti-windup condition
+    gives 84 mismatches. The interrupt handler uses the same macro.
+  - **Locks reserve a line for an address** (`icache.v`). The first
+    locking design only protected whatever a line already held, so
+    software had to execute every branch path of the handler before
+    locking it, with that warm-up code kept off the handler's 12 cache
+    lines so it wouldn't evict them in between - impossible with 4
+    lines left. Now a lock records its tag: the owner's miss fills the
+    line, anyone else's bypasses. Lock-then-run works, and the old
+    "locking unwarmed code is a usage error" caveat is gone
+    (`tb_icache_reserve.v`; the old semantics fail 6 of its 11 checks).
+- [x] **Interrupt latency: from 137-319 cycles to 61-65.** Traced with
+      a probe on the first control-loop run: at every locked tick the
+      cache was mid-read for the background task, and interrupt entry
+      took 4-180 cycles depending on where in that flash read the tick
+      landed - the trap rule required a real instruction in EX, which
+      only arrives after the read finishes. Locking made the handler
+      deterministic but not *when it starts*. Changes:
+  - Traps are taken in any cycle; `mepc` is the oldest instruction that
+    hasn't executed (EX if valid, else ID, else the pending redirect
+    target, else the fetch address).
+  - The in-flight flash read is aborted: `spi_flash_ctrl.v` raises
+    chip-select mid-transaction (a SPI flash treats that as the end of
+    the command), `icache.v` returns a dummy ready the CPU discards.
+    Only for interrupts - branch redirects still wait - so every
+    earlier measurement (531/10, the cycle-timing tests) is unchanged.
+  - Three bugs found on the way, each by tracing a failing test:
+    (1) a fetch issued in the same cycle as a redirect came back
+    labeled with the redirect target's PC - the handler's first
+    instruction was replaced by the interrupted code's, the tick was
+    never acknowledged, trap storm. The original design only avoided
+    this because a flush always coincided with a fetch already
+    outstanding under the two-cycle fetch cadence; now no fetch starts
+    on a flush cycle. (2) Livelock: code whose fetch took longer than
+    the gap between ticks had every fill aborted and never ran. (The
+    original rule could livelock too - a trap squashes the instruction
+    in EX.) Now after `mret` no trap is taken until one instruction of
+    the interrupted code has executed, so every return makes progress.
+    (3) An aborted fill left a half-overwritten line marked valid for
+    its old tag; lines are now invalidated when a fill starts.
+  - `tb_interrupt_stress.v`: ticks at every pipeline phase over cached
+    code, cache-disabled code (aborting one-word reads) and code that
+    thrashes the cache (aborting line fills); exact sums per phase,
+    plus per-cycle properties - nothing executes between a trap and the
+    handler, execution resumes exactly at `mepc`, and every instruction
+    entering decode matches flash at its PC (the PC-only checks
+    couldn't see bug 1). Covered 127 aborted fills and 34 aborted
+    reads; removing the progress rule or the flush-fetch rule fails
+    it. `tb_icache_abort.v` and new `tb_spi_flash_ctrl.v` checks cover
+    the abort itself; skipping the fill-start invalidate fails
+    `OLD_OCCUPANT_REFILLS_NOT_HIT_ON_PARTIAL_LINE`.
+  - A suspected bug that turned out unreachable: a trap during a
+    load-use stall would have let the stalled instruction execute
+    ahead of the handler. But load-use stalls never occur in this core
+    (0 in 38,929 cycles) - fetch delivers at most one instruction per
+    two cycles, so a dependent instruction never reaches ID while its
+    load is in EX. Fixed anyway (one term), documented as latent.
+  - `tb_interrupt_test.v` expected the handler to run "5 or 6" times;
+    that bound described the original core's timing, not correctness.
+    It now checks that the stored count equals the traps actually taken
+    before the store.
 - [ ] Motor + encoder + driver integration
-- [ ] Measurement campaign across the three configurations
 - [ ] Portfolio writeup with scope/logic-analyzer evidence
 
 ## Environment already set up

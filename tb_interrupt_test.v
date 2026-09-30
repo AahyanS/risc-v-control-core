@@ -36,6 +36,15 @@ module tb_interrupt_test;
 
     always #5 clk = ~clk;
 
+    // Traps taken up to the moment the ISR count is stored (the store
+    // to 0x304 reaching MEM).
+    integer traps_so_far = 0, traps_before_store = -1;
+    always @(posedge clk) begin
+        if (uut.trap_taken) traps_so_far = traps_so_far + 1;
+        if (uut.ex_mem_mem_write && uut.ex_mem_alu_result == 32'h304 && traps_before_store < 0)
+            traps_before_store = traps_so_far;
+    end
+
     function [31:0] peek_result(input [31:0] offset);
         peek_result = {uut.dmem_inst.peek(offset+3), uut.dmem_inst.peek(offset+2),
                         uut.dmem_inst.peek(offset+1), uut.dmem_inst.peek(offset+0)};
@@ -60,20 +69,22 @@ module tb_interrupt_test;
             @(posedge clk); @(negedge clk);
         end
 
-        // main_loop's exit check (blt x28,x7,main_loop) races the
-        // asynchronous ISR incrementing x28 - the loop can overshoot
-        // the threshold by one iteration if an interrupt lands between
-        // a check and the next one, since the two aren't synchronized.
-        // Traced and confirmed this is exactly what happens (x28
-        // increments correctly and monotonically on every real
-        // interrupt, no corruption) rather than assuming it away -
-        // the real guarantee is "at least 5, and not many more,"
-        // not "exactly 5."
-        if (peek_result(32'h304) < 32'd5 || peek_result(32'h304) > 32'd6)
-            $display("FAIL [ISR_RAN_ENOUGH_TIMES]: got=%0d, expected 5 or 6 (5 plus at most one race overshoot)",
-                      peek_result(32'h304));
+        // main_loop's exit check races the ISR: interrupts stay
+        // enabled after the loop exits, and the result stores that
+        // follow are cold flash fetches (~520 cycles each against a
+        // 200-cycle timer), so more ticks can land before x28 is
+        // stored. The first version of this check allowed "5 or 6",
+        // which described the original core's timing - it couldn't take
+        // an interrupt until a fetch finished - rather than
+        // correctness, and broke when interrupts became able to cut a
+        // fetch short. Now exact and timing-independent: the stored
+        // count must equal the traps actually taken before that store
+        // executed, and be at least 5.
+        if (peek_result(32'h304) < 32'd5 || peek_result(32'h304) != traps_before_store)
+            $display("FAIL [ISR_RAN_ENOUGH_TIMES]: stored %0d, traps before the store %0d (need equal, >= 5)",
+                      peek_result(32'h304), traps_before_store);
         else
-            $display("PASS [ISR_RAN_ENOUGH_TIMES]: handler ran %0d times, each resuming correctly via mret",
+            $display("PASS [ISR_RAN_ENOUGH_TIMES]: handler ran %0d times (= traps taken before the store), each resuming correctly via mret",
                       peek_result(32'h304));
 
         if (peek_result(32'h300) < 32'd5)

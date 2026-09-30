@@ -12,6 +12,9 @@
 // actually driven in both directions with the arm switch up, that
 // direction never changes at the pins while enable is high, and that
 // enable never goes high at all with the arm switch down.
+// With -DCONTROL_LOOP: runs sw/hw_control_loop (the three-configuration
+// control-loop measurement) and checks properties of its report that
+// must hold whatever the exact numbers turn out to be.
 // With -DCACHE_LOCK: runs sw/hw_cache_lock (the locked-vs-unlocked
 // interference experiment), decodes the UART pin back into text the
 // way the PC will, and checks the printed numbers against the CPU's
@@ -129,8 +132,9 @@ module tb_basys3_top;
     // the CACHE_LOCK program prints anything.
     localparam UART_CPB = 16;   // short bit time so simulation is fast
 
-    reg  [8*128-1:0] cur_line  = 0;
-    reg  [8*128-1:0] last_line = 0;
+    reg  [8*160-1:0] cur_line  = 0;
+    reg  [8*160-1:0] last_line = 0;
+    reg  [8*160-1:0] line_buf [0:7];   // first 8 lines, for multi-line reports
     integer          lines_rx = 0;
     integer          framing_errors = 0;
     integer          ub;
@@ -148,10 +152,11 @@ module tb_basys3_top;
         if (uut.uart_txd !== 1'b1) framing_errors = framing_errors + 1;
         if (ch == 8'd10) begin
             last_line = cur_line;
+            if (lines_rx < 8) line_buf[lines_rx] = cur_line;
             cur_line  = 0;
             lines_rx  = lines_rx + 1;
         end else if (ch != 8'd13) begin
-            cur_line = {cur_line[8*127-1:0], ch};
+            cur_line = {cur_line[8*159-1:0], ch};
         end
     end
 
@@ -160,10 +165,16 @@ module tb_basys3_top;
     endfunction
 
     integer parsed, p_run, p_umin, p_umax, p_lmin, p_lmax;
+    integer r_min [0:2], r_mean [0:2], r_max [0:2], r_hz [0:2], r_per [0:2], r_bg [0:2];
+    integer c, cfg_ok;
+    integer v_min, v_mean, v_max, v_hz, v_per, v_bg;
+    reg [8*160-1:0] tmp_line;
 
     initial begin
 `ifdef CACHE_LOCK
         $readmemh("sw/hw_cache_lock_sim.hex", flash.mem);
+`elsif CONTROL_LOOP
+        $readmemh("sw/hw_control_loop_sim.hex", flash.mem);
 `elsif MOTOR_TEST
         $readmemh("sw/hw_motor_test_sim.hex", flash.mem);
 `else
@@ -199,6 +210,60 @@ module tb_basys3_top;
         check(p_umin == 531 && p_umax == 531, "UNLOCKED_531_EVERY_CALL");
         check(p_lmin == 10 && p_lmax == 10,   "LOCKED_10_EVERY_CALL");
         check(led == 16'd3 || led == 16'd4,    "LEDS_SHOW_RUN_COUNT");
+`elsif CONTROL_LOOP
+        // ---- One full round: a header line plus one per configuration ----
+        for (i = 0; i < 60000000 && lines_rx < 4; i = i + 1) @(negedge clk);
+        check(lines_rx >= 4, "ROUND_REPORT_PRINTED");
+        check(framing_errors == 0, "UART_FRAMES_VALID");
+        $display("%0s", line_buf[0]);
+        $display("%0s", line_buf[1]);
+        $display("%0s", line_buf[2]);
+        $display("%0s", line_buf[3]);
+
+        // A "(missed N)" at the relaxed period would break the format,
+        // so parsing also checks that every configuration kept up there.
+        tmp_line = line_buf[1];
+        parsed = $sscanf(tmp_line,
+            "no cache: response min %d mean %d max %d cycles, max rate %d Hz (period %d), background %d",
+            v_min, v_mean, v_max, v_hz, v_per, v_bg);
+        r_min[0] = v_min; r_mean[0] = v_mean; r_max[0] = v_max;
+        r_hz[0] = v_hz; r_per[0] = v_per; r_bg[0] = v_bg;
+        check(parsed == 6, "NO_CACHE_LINE_PARSES_NO_MISSES_AT_P_REF");
+        tmp_line = line_buf[2];
+        parsed = $sscanf(tmp_line,
+            "cache: response min %d mean %d max %d cycles, max rate %d Hz (period %d), background %d",
+            v_min, v_mean, v_max, v_hz, v_per, v_bg);
+        r_min[1] = v_min; r_mean[1] = v_mean; r_max[1] = v_max;
+        r_hz[1] = v_hz; r_per[1] = v_per; r_bg[1] = v_bg;
+        check(parsed == 6, "CACHE_LINE_PARSES_NO_MISSES_AT_P_REF");
+        tmp_line = line_buf[3];
+        parsed = $sscanf(tmp_line,
+            "locked: response min %d mean %d max %d cycles, max rate %d Hz (period %d), background %d",
+            v_min, v_mean, v_max, v_hz, v_per, v_bg);
+        r_min[2] = v_min; r_mean[2] = v_mean; r_max[2] = v_max;
+        r_hz[2] = v_hz; r_per[2] = v_per; r_bg[2] = v_bg;
+        check(parsed == 6, "LOCKED_LINE_PARSES_NO_MISSES_AT_P_REF");
+
+        // Internal consistency.
+        cfg_ok = 1;
+        for (c = 0; c < 3; c = c + 1)
+            if (!(r_min[c] <= r_mean[c] && r_mean[c] <= r_max[c] &&
+                  r_hz[c] == 25000000 / r_per[c] && r_max[c] < r_per[c]))
+                cfg_ok = 0;
+        check(cfg_ok, "MIN_LE_MEAN_LE_MAX_AND_HZ_MATCHES_PERIOD");
+
+        // What locking must deliver, whatever the exact numbers.
+        check(r_max[2] < r_max[1], "LOCKED_WORST_CASE_BEATS_UNLOCKED");
+        check(r_max[2] < r_max[0], "LOCKED_WORST_CASE_BEATS_NO_CACHE");
+        check(r_hz[2] > r_hz[1] && r_hz[2] > r_hz[0], "LOCKED_HAS_HIGHEST_MAX_RATE");
+        // Locked jitter: the handler always hits, and since interrupts
+        // abort the interrupted code's in-flight flash read instead of
+        // waiting it out, entry no longer depends on what the background
+        // was fetching. (Before that change: 137-319 cycles on hardware,
+        // traced to exactly that wait.) What's left is a few cycles of
+        // phase - where in the two-cycle fetch cadence and the abort
+        // handshake the tick lands.
+        check(r_max[2] - r_min[2] <= 8, "LOCKED_JITTER_AT_MOST_8_CYCLES");
 `elsif MOTOR_TEST
         // ---- Arm switch down: motor must never be enabled ----
         sw15 = 0;

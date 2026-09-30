@@ -128,6 +128,17 @@ Only one program can hold the COM port open at a time. Vivado's
 programming uses the bridge's other channel, so programming works
 with a terminal open.
 
+### The control-loop measurement
+
+Same procedure with `sw/hw_control_loop.bin`. Every few seconds it
+prints a round of three lines, one per configuration (no cache, cache,
+cache with the control loop locked):
+```
+locked: response min 61 mean 61 max 65 cycles, max rate 100401 Hz (period 249), background 1459
+```
+The motor doesn't need to be connected - the loop's timing doesn't
+depend on it - and SW15 down keeps it from being driven anyway.
+
 ## 4. Wiring the motor and encoder
 
 Do every step with the Basys3 **powered off** and the motor supply
@@ -236,6 +247,6 @@ reset, the STARTUPE2 flash path (including the three flash clocks that
 are lost after configuration), the CPU fetching from 3 MB into flash,
 the LEDs, the encoder, the motor safety chain, and the UART (decoded
 back into text and checked against the CPU's registers) - with all
-three hardware programs.
+four hardware programs.
 It also runs a negative control with the boot workaround removed, which
 fails, confirming the workaround is what makes booting work.

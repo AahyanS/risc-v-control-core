@@ -25,6 +25,15 @@
 // so the program image can sit above the FPGA bitstream in the same
 // flash chip while the CPU still sees it starting at address 0. It
 // defaults to 0, which is what every simulation testbench uses.
+//
+// abort ends the current transaction immediately: chip-select goes
+// high (which a SPI flash treats as the end of the read command at any
+// point), no ready pulse, back to idle. It wins over a req in the same
+// cycle. Used when a fetch in flight is going to be thrown away - an
+// interrupt redirecting fetch - so the next transaction can start at
+// once instead of after up to 64 more SCK periods. Chip-select then
+// stays high for at least one cycle before the next read (the idle
+// state only drops it the cycle after it sees req).
 
 module spi_flash_ctrl #(
     parameter [23:0] FLASH_BASE = 24'h000000
@@ -35,6 +44,7 @@ module spi_flash_ctrl #(
     // Simple request/response interface to the rest of the core
     input  [23:0] addr,     // byte address in flash, word-aligned
     input         req,      // pulse: start a 32-bit read at addr
+    input         abort,    // end the current transaction now (see header)
     output reg    ready,    // pulses high for 1 cycle when rdata is valid
     output reg [31:0] rdata,
     output reg    busy,     // high for the whole transaction
@@ -57,7 +67,7 @@ module spi_flash_ctrl #(
     always @(posedge clk) begin
         ready <= 1'b0; // default: only asserted for exactly 1 cycle
 
-        if (reset) begin
+        if (reset || abort) begin
             xfer_active <= 1'b0;
             cs_n        <= 1'b1;
             sck         <= 1'b0;

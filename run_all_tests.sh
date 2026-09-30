@@ -21,6 +21,7 @@ declare -A SRC=(
     [cpu_pipeline_cache]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v cpu_pipeline_cache.v"
     [cpu_pipeline_cache_locked]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v quad_decoder.v pwm.v timer.v uart_tx.v cpu_pipeline_cache_locked.v"
     [spi_flash_ctrl]="spi_flash_ctrl.v spi_flash_model.v"
+    [icache]="icache.v spi_flash_ctrl.v spi_flash_model.v"
 )
 
 # Testbenches driven by their own scripts (they need +HEXFILE= etc.).
@@ -34,7 +35,7 @@ for tb in tb_*.v; do
 
     # The design under test is the first known module the testbench
     # instantiates; unit testbenches fall back to <module>.v.
-    top=$(grep -oE "^\s*(cpu_pipeline_cache_locked|cpu_pipeline_cache|cpu_pipeline_xip|cpu_pipeline|cpu|spi_flash_ctrl)\b" "$tb" | head -1 | tr -d ' ')
+    top=$(grep -oE "^\s*(cpu_pipeline_cache_locked|cpu_pipeline_cache|cpu_pipeline_xip|cpu_pipeline|cpu|spi_flash_ctrl|icache)\b" "$tb" | head -1 | tr -d ' ')
     if [ -n "$top" ]; then
         src=${SRC[$top]}
     else
@@ -74,8 +75,8 @@ echo
 echo "=== Board-level simulation ==="
 board=$(bash fpga/sim/run_board_sim.sh 2>&1)
 echo "$board" | grep -E "^===|ALL CHECKS|CHECK\(S\) FAILED"
-# Expected: three passing runs, then the negative control failing.
-if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 3 ] || \
+# Expected: four passing runs, then the negative control failing.
+if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 4 ] || \
    [ "$(echo "$board" | grep -c "CHECK(S) FAILED")" -ne 1 ]; then
     bad+=("board sim")
     total_fail=$((total_fail + 1))

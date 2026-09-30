@@ -125,6 +125,7 @@ module cpu_pipeline_cache_locked #(
     // down this file.
     wire        ex_flush;
     wire [31:0] ex_correct_target;
+    wire        trap_taken;          // driven in the EX section
 
     // ---- Fetch state machine (unchanged) ----
     reg        fetch_issued;      // a fetch is currently outstanding
@@ -132,6 +133,10 @@ module cpu_pipeline_cache_locked #(
                                    // in-flight fetch's result must be
                                    // discarded once it arrives
     reg [31:0] pending_target;
+    reg        pending_trap;      // ...and that flush was an interrupt:
+                                   // the in-flight fetch is aborted
+                                   // rather than waited out (see
+                                   // icache.v, "Abort")
 
     wire [31:0] flash_rdata;
     wire        flash_ready;
@@ -139,12 +144,23 @@ module cpu_pipeline_cache_locked #(
 
     wire load_use_hazard;
 
-    wire flash_req = !fetch_issued && !load_use_hazard;
+    // !ex_flush: never start a fetch in a cycle that redirects. The
+    // request would be for the old pc_curr while pc moves to the
+    // redirect target, so the returned instruction would be labeled
+    // with the wrong PC. Under the original trap rule a flush always
+    // coincided with a fetch already outstanding (the two-cycle fetch
+    // cadence lined up that way), so this never arose; once interrupts
+    // could be taken in any cycle it did - found by
+    // tb_interrupt_stress.v as a trap storm: the handler's first
+    // instruction was replaced by the interrupted code's, so the tick
+    // was never acknowledged.
+    wire flash_req = !fetch_issued && !load_use_hazard && !ex_flush;
 
     // Lock control, driven from the MEM stage below.
     wire        lock_cmd;
     wire        lock_set;
     wire [23:0] lock_addr;
+    reg         cache_disable;   // 0xFFFFFF34 bit 0, written from MEM below
 
     // Instrumentation wiring, also driven from the MEM stage below.
     wire        stats_reset;
@@ -162,6 +178,8 @@ module cpu_pipeline_cache_locked #(
         .lock_cmd(lock_cmd),
         .lock_set(lock_set),
         .lock_addr(lock_addr),
+        .cache_disable(cache_disable),
+        .abort(pending_redirect && pending_trap),
         .hit_count(hit_count),
         .miss_count(miss_count),
         .stats_reset(stats_reset),
@@ -177,10 +195,12 @@ module cpu_pipeline_cache_locked #(
         if (reset) begin
             fetch_issued     <= 1'b0;
             pending_redirect <= 1'b0;
+            pending_trap     <= 1'b0;
         end else begin
             if (ex_flush && fetch_issued) begin
                 pending_redirect <= 1'b1;
                 pending_target   <= ex_correct_target;
+                pending_trap     <= trap_taken;
             end
 
             if (flash_req)
@@ -188,6 +208,7 @@ module cpu_pipeline_cache_locked #(
             else if (flash_ready) begin
                 fetch_issued     <= 1'b0;
                 pending_redirect <= 1'b0;
+                pending_trap     <= 1'b0;
             end
         end
     end
@@ -216,8 +237,13 @@ module cpu_pipeline_cache_locked #(
     wire        if_redirect = if_is_jal || if_predict_taken;
 
     assign pc_next =
-        flash_ready  ? (pending_redirect ? pending_target :
-                        ex_flush          ? ex_correct_target :
+        // ex_flush before pending_redirect: an interrupt can now be
+        // taken while an earlier redirect is still pending (see
+        // trap_taken), and must win. Before that change the two could
+        // never coincide - EX only holds bubbles while a redirect is
+        // pending - so the order didn't matter.
+        flash_ready  ? (ex_flush          ? ex_correct_target :
+                        pending_redirect  ? pending_target :
                         if_redirect        ? if_predicted_target :
                                              (pc_curr + 32'd4)) :
         fetch_issued ? pc_curr :
@@ -255,7 +281,15 @@ module cpu_pipeline_cache_locked #(
             if_id_instr           <= if_instr;
             if_id_predicted_taken <= if_predict_taken;
             if_id_valid           <= 1'b1;
-        end else if (load_use_hazard && !flash_ready) begin
+        end else if (load_use_hazard && !flash_ready && !ex_flush) begin
+            // (!ex_flush: a trap taken while the load is in EX must also
+            // squash the dependent instruction held here - holding it
+            // would let it execute ahead of the handler with a stale
+            // operand, then again after mret. Unreachable in this core
+            // today: fetch delivers at most one instruction per two
+            // cycles, so load-use stalls never actually occur - 0 in
+            // 38,929 cycles of tb_interrupt_stress.v - but it would
+            // become a live bug if fetch ever got faster.)
             if_id_pc              <= if_id_pc;
             if_id_instr           <= if_id_instr;
             if_id_predicted_taken <= if_id_predicted_taken;
@@ -538,12 +572,52 @@ module cpu_pipeline_cache_locked #(
     // itself be mistaken for a valid trap point, with mepc left
     // pointing at a stale, meaningless PC.
     //
-    // Bounded consequence of waiting for a real instruction: if EX
-    // happens to be bubbling (e.g. mid-flash-fetch) when the timer
-    // fires, the trap is recognized up to one pipeline-fill later -
-    // small and bounded next to the multi-hundred-cycle flash
-    // latencies this system already operates under.
-    wire trap_taken = mstatus_mie && mie_mtie && timer_pending && id_ex_valid;
+    // Taken in ANY cycle, not only when EX holds a real instruction.
+    // The first version waited for id_ex_valid, which made interrupt
+    // entry wait out whatever flash read was in flight: measured on the
+    // control-loop benchmark (sw/hw_control_loop.s), entry took 4-180
+    // cycles depending on where in the interrupted code's flash
+    // transaction the tick landed - jitter the locked handler couldn't
+    // remove. Now the trap is taken immediately and the in-flight fetch
+    // is aborted (pending_trap, icache.v "Abort").
+    //
+    // The bubble problem described above is handled by computing mepc
+    // from what the pipeline actually holds, instead of taking EX's PC:
+    // the oldest instruction that hasn't executed yet is in EX if EX is
+    // valid, else in ID if ID is valid, else it's the one being (or
+    // about to be) fetched - pending_target if an earlier redirect
+    // is waiting on the in-flight fetch, pc_curr otherwise. Everything
+    // younger is flushed, so after mret execution resumes exactly there.
+    wire [31:0] next_exec_pc = id_ex_valid                       ? id_ex_pc :
+                               if_id_valid                       ? if_id_pc :
+                               (fetch_issued && pending_redirect) ? pending_target :
+                                                                    pc_curr;
+    //
+    // Forward progress: taking traps in any cycle and aborting the fetch
+    // in flight means code whose fetch takes longer than the gap between
+    // interrupts would never execute at all - found as a livelock in
+    // tb_interrupt_stress.v: every return from the handler re-missed on
+    // the main loop's line, the next tick aborted that fill, and so on
+    // forever. (The original rule could livelock too: a trap squashes
+    // the instruction in EX, so a tick right after every return also
+    // blocks all progress.) progress_hold closes this: after an mret,
+    // no trap is taken until one instruction of the interrupted code has
+    // executed. Its fetch is never aborted, since no trap can occur
+    // during it. When the period leaves room for the handler plus one
+    // flash transaction this costs nothing - the next tick arrives after
+    // that first instruction anyway.
+    reg progress_hold;
+    always @(posedge clk) begin
+        if (reset)
+            progress_hold <= 1'b0;
+        else if (id_ex_is_mret && !trap_taken)
+            progress_hold <= 1'b1;                      // mret executes
+        else if (id_ex_valid)
+            progress_hold <= 1'b0;                      // first resumed
+                                                          // instruction ran
+    end
+
+    assign trap_taken = mstatus_mie && mie_mtie && timer_pending && !progress_hold;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -561,7 +635,7 @@ module cpu_pipeline_cache_locked #(
             // perspective, that instruction hasn't executed yet: it
             // will run again, from scratch, once MRET returns to
             // mepc.
-            mepc       <= id_ex_pc;
+            mepc       <= next_exec_pc;
             mcause     <= 32'h8000_0007;   // machine timer interrupt
             mstatus[7] <= mstatus[3];       // MPIE = old MIE
             mstatus[3] <= 1'b0;             // disable interrupts in the handler
@@ -674,6 +748,10 @@ module cpu_pipeline_cache_locked #(
     //   0xFFFFFF30 - UART transmit: a store sends the low 8 bits;
     //                a load returns busy in bit 0 (poll until 0
     //                before storing - a store while busy is dropped)
+    //   0xFFFFFF34 - cache control, bit 0 = disable (read/write). 1
+    //                sends every fetch straight to flash: Configuration
+    //                1 (no cache) at runtime, for the three-way
+    //                comparison. Resets to 0 (cache on).
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -686,6 +764,7 @@ module cpu_pipeline_cache_locked #(
     localparam [31:0] MMIO_LED_ADDR          = 32'hFFFFFF28;
     localparam [31:0] MMIO_MOTOR_DIR_ADDR    = 32'hFFFFFF2C;
     localparam [31:0] MMIO_UART_ADDR         = 32'hFFFFFF30;
+    localparam [31:0] MMIO_CACHE_CTRL_ADDR   = 32'hFFFFFF34;
 
     wire is_mmio_lock_write    = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
     wire is_mmio_cycle_addr    = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
@@ -700,13 +779,14 @@ module cpu_pipeline_cache_locked #(
     wire is_mmio_led           = (ex_mem_alu_result == MMIO_LED_ADDR);
     wire is_mmio_motor_dir     = (ex_mem_alu_result == MMIO_MOTOR_DIR_ADDR);
     wire is_mmio_uart          = (ex_mem_alu_result == MMIO_UART_ADDR);
+    wire is_mmio_cache_ctrl    = (ex_mem_alu_result == MMIO_CACHE_CTRL_ADDR);
     wire is_mmio_addr          = is_mmio_lock_write || is_mmio_cycle_addr ||
                                   is_mmio_hit_addr || is_mmio_miss_addr ||
                                   is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
                                   is_mmio_pwm_addr || is_mmio_timer_cmp ||
                                   is_mmio_timer_ack || is_mmio_timer_count ||
                                   is_mmio_led || is_mmio_motor_dir ||
-                                  is_mmio_uart;
+                                  is_mmio_uart || is_mmio_cache_ctrl;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -741,11 +821,13 @@ module cpu_pipeline_cache_locked #(
 
     always @(posedge clk) begin
         if (reset) begin
-            led       <= 16'd0;
-            motor_dir <= 1'b0;
+            led           <= 16'd0;
+            motor_dir     <= 1'b0;
+            cache_disable <= 1'b0;
         end else if (ex_mem_mem_write) begin
-            if (is_mmio_led)       led       <= ex_mem_rs2_data[15:0];
-            if (is_mmio_motor_dir) motor_dir <= ex_mem_rs2_data[0];
+            if (is_mmio_led)        led           <= ex_mem_rs2_data[15:0];
+            if (is_mmio_motor_dir)  motor_dir     <= ex_mem_rs2_data[0];
+            if (is_mmio_cache_ctrl) cache_disable <= ex_mem_rs2_data[0];
         end
     end
 
@@ -756,6 +838,7 @@ module cpu_pipeline_cache_locked #(
         .reset(reset),
         .compare(timer_compare),
         .clear_pending(ex_mem_mem_write && is_mmio_timer_ack),
+        .restart(ex_mem_mem_write && is_mmio_timer_cmp),
         .count(timer_count),
         .pending(timer_pending)
     );
@@ -785,6 +868,7 @@ module cpu_pipeline_cache_locked #(
         is_mmio_led           ? {16'd0, led} :
         is_mmio_motor_dir     ? {31'd0, motor_dir} :
         is_mmio_uart          ? {31'd0, uart_busy} :
+        is_mmio_cache_ctrl    ? {31'd0, cache_disable} :
                                 mem_dmem_read_data;
 
     dmem dmem_inst (

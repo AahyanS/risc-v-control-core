@@ -7,7 +7,22 @@ the worst case, and a worst-case latency spike is exactly what breaks a
 control loop's deadline. The fix isn't a bigger cache — it's making the hot
 path deterministic by locking it into the cache.
 
-That argument is backed by measurement, not just made:
+That argument is backed by measurement on real hardware. The same
+interrupt-driven PID control loop, running on the physical FPGA next to a
+background task, in three configurations of one chip — only a control
+register differs between them:
+
+| | worst-case response | max stable loop rate |
+|---|---|---|
+| no cache (execute from flash) | 3701 cycles | 4.7 kHz |
+| cache | 4231 cycles | 5.9 kHz |
+| cache + control loop locked | **65 cycles** | **100.4 kHz** |
+
+The unlocked cache is *worse* than no cache in the worst case: the
+background task evicts the control loop between ticks, so every tick
+refills it. Locking gives a 65x better worst case and a 17x faster loop.
+
+The underlying effect, isolated in a micro-benchmark:
 
 | | unlocked cache | locked cache |
 |---|---|---|
@@ -38,14 +53,19 @@ for the full build log.
 - **Memory hierarchy**: program executes in place (XIP) from external QSPI
   flash rather than on-chip BRAM, behind a direct-mapped instruction cache
   with **software-controlled cache-line locking** — the centerpiece of the
-  project. A locked line can never be evicted; the real cost is that any
+  project. A lock reserves a line for one address, so code can be locked
+  before it has ever run; nothing else can evict it; the real cost is that any
   other address aliasing to that line becomes permanently uncacheable while
   the lock holds, which is the actual, unavoidable tradeoff locking buys
   determinism with.
 - **Interrupts**: a minimal but real M-mode subset (`mstatus`, `mie`, `mip`,
   `mtvec`, `mepc`, `mcause`; `CSRRW`/`CSRRS`/`MRET`) driven by a hardware
   timer, so a periodic control loop has a real trigger and "missed deadline"
-  is a measurable event, not just a simulation artifact.
+  is a measurable event, not just a simulation artifact. An interrupt is
+  taken in any cycle and cancels the interrupted code's in-flight flash
+  read rather than waiting it out, with a rule that guarantees the
+  interrupted code still makes progress — which took locked-loop jitter
+  from 182 cycles to 4.
 - **Peripherals**: a quadrature encoder decoder (4x decoding, hardware
   glitch rejection) and a PWM generator, both memory-mapped, both running
   continuously off the clock regardless of what the CPU is doing at any
@@ -131,10 +151,10 @@ Pmod DHB1 H-bridge, and an encoder-equipped gearmotor) is underway. **The
 CPU runs on the physical board**, standalone: the FPGA configures itself
 from its onboard flash and the CPU executes in place from the same chip,
 through Xilinx's `STARTUPE2` primitive. On the XC7A35T it uses 20% of the
-logic and meets timing up to about 53-55 MHz; the custom MAC instruction
+logic and meets timing up to about 53-57 MHz; the custom MAC instruction
 is the critical path. A UART transmitter lets programs print their
-measurements to a PC, and the cache-locking result above has been
-reproduced on the board. Next is closed-loop motor control.
+measurements to a PC, and every result above was measured on the board.
+Next is closing the loop on the real motor.
 [fpga/README.md](fpga/README.md) is the bench procedure. See
 [PROJECT.md](PROJECT.md) for the full checklist and design log.
 

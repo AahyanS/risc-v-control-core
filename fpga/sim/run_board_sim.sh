@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_board_sim.sh
 # Runs the board-level simulation (fpga/sim/tb_basys3_top.v) in all
-# four modes. Run from the repository root after
+# five modes. Run from the repository root after
 # bash fpga/build_programs.sh:
 #   bash fpga/sim/run_board_sim.sh
 
@@ -23,6 +23,10 @@ iverilog -DMOTOR_TEST -o sim_board_motor $SRC && vvp sim_board_motor | grep -vE 
 echo
 echo "=== hw_cache_lock (locked vs. unlocked experiment, printed over UART) ==="
 iverilog -DCACHE_LOCK -o sim_board_lock $SRC && vvp sim_board_lock | grep -vE '^VCD|finish'
+
+echo
+echo "=== hw_control_loop (three-configuration control-loop measurement) ==="
+iverilog -DCONTROL_LOOP -o sim_board_control $SRC && vvp sim_board_control | grep -vE '^VCD|finish'
 
 echo
 echo "=== negative control: zero dummy boot clocks (expected to FAIL) ==="

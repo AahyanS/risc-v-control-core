@@ -44,11 +44,36 @@
 // actual hardware cost locking buys determinism with, which is the
 // whole point of this project.
 //
-// Locking assumes software already warmed the target line (fetched it
-// at least once) before issuing the lock command - the command only
-// sets a bit, it doesn't force a fill. Locking code that was never
-// fetched is a software usage error, not something the hardware
-// guards against here.
+// A lock reserves the line for the address it was issued with: the
+// lock records that address's tag, a miss by that tag fills the line
+// normally, and a miss by any other tag bypasses. So software can lock
+// before the code has ever run - the owner fills its line on first
+// use, and nothing else can evict it afterward. (The first version
+// only protected whatever the line already held, which meant warming
+// every branch path of the code before locking it, with the warm-up
+// code itself kept off the locked indices so it wouldn't evict them
+// in between - unworkable for a 12-line interrupt handler. Found while
+// writing the control-loop measurement, sw/hw_control_loop.s.) A lock
+// on a line that's already warm behaves exactly as before.
+//
+// ---- Cache disable ----
+// With cache_disable high, every fetch takes the bypass path: one word
+// straight from flash, nothing looked up, nothing filled. That turns
+// this cache into Configuration 1 (plain XIP, no cache) at runtime, so
+// all three configurations of the project's experiment can be compared
+// on one chip with one program, only a control bit differing. Lines
+// already in the cache stay valid while disabled (flash is read-only,
+// so they can't go stale) and are used again once re-enabled.
+//
+// ---- Abort ----
+// abort (from the CPU, when an interrupt redirects fetch while a flash
+// read is in flight) abandons a fill or bypass: the flash transaction
+// is cut short, and a dummy ready is returned so the CPU's fetch logic
+// stops waiting - the CPU discards that word anyway, which is the only
+// reason aborting is safe. A line is marked invalid when its fill
+// starts, so an abandoned half-filled line can never be mistaken for a
+// valid one. In any other state abort does nothing (a hit or a
+// completed word is already on its way).
 
 module icache #(
     parameter [23:0] FLASH_BASE = 24'h000000   // passed through to spi_flash_ctrl
@@ -67,6 +92,12 @@ module icache #(
     input         lock_cmd,   // pulse: apply a lock/unlock this cycle
     input         lock_set,   // 1 = lock, 0 = unlock
     input  [23:0] lock_addr,  // any address inside the target line
+
+    // 1 = cache off: every fetch bypasses (see header).
+    input         cache_disable,
+
+    // Abandon the fill/bypass in flight (see header).
+    input         abort,
 
     // Instrumentation: running totals, readable/resettable from the
     // CPU level via memory-mapped registers - see cpu_pipeline_cache.v
@@ -95,6 +126,7 @@ module icache #(
     reg        valid      [0:15];
     reg [15:0] tag        [0:15];
     reg        lock       [0:15];
+    reg [15:0] lock_tag   [0:15];   // which tag a locked line belongs to
 
     integer reset_i;
 
@@ -114,8 +146,14 @@ module icache #(
     // asked to protect - a real race, not a hypothetical one (found by
     // tracing tb_cache_lock_protection.v: the lock write and the
     // aliasing fetch's miss landed in the exact same cycle).
-    wire req_index_locked = lock[req_index] ||
-        (lock_cmd && lock_set && (lock_addr[7:4] == req_index));
+    //
+    // A locked line only turns away OTHER code: a miss by the tag the
+    // line was locked for fills it as usual (see the header).
+    wire same_cycle_lock  = lock_cmd && lock_set && (lock_addr[7:4] == req_index);
+    wire req_index_locked = lock[req_index] || same_cycle_lock;
+    wire req_owns_lock    = same_cycle_lock ? (lock_addr[23:8] == req_tag)
+                                            : (lock_tag[req_index] == req_tag);
+    wire req_locked_out   = req_index_locked && !req_owns_lock;
 
     // ---- Line-fill bookkeeping (only meaningful during ST_FILL/ST_RETURN) ----
     reg [1:0]  fill_word_idx;        // which word of the line we're on (0-3)
@@ -130,11 +168,14 @@ module icache #(
     wire        flash_ready;
     wire        flash_busy;
 
+    wire abort_now = abort && (state == ST_FILL || state == ST_BYPASS);
+
     spi_flash_ctrl #(.FLASH_BASE(FLASH_BASE)) flash_ctrl_inst (
         .clk(clk),
         .reset(reset),
         .addr(flash_addr_r),
         .req(flash_req_r),
+        .abort(abort_now),
         .ready(flash_ready),
         .rdata(flash_rdata),
         .busy(flash_busy),
@@ -155,24 +196,33 @@ module icache #(
             // Lock commands are just a bit set/clear - handled here,
             // outside the state case, since they can land on any cycle
             // regardless of fetch activity. The miss-routing decision
-            // below uses req_index_locked (not the raw lock[] read) so
+            // below uses req_locked_out (not the raw lock[] read) so
             // a lock landing the same cycle as a conflicting miss is
             // still honored - see req_index_locked's comment above.
-            if (lock_cmd)
-                lock[lock_addr[7:4]] <= lock_set;
+            if (lock_cmd) begin
+                lock[lock_addr[7:4]]     <= lock_set;
+                lock_tag[lock_addr[7:4]] <= lock_addr[23:8];
+            end
 
-            case (state)
+            if (abort_now) begin
+                // Abandon the fill/bypass: dummy ready, back to idle.
+                // A fill's line was already invalidated when it began.
+                ready <= 1'b1;
+                state <= ST_IDLE;
+            end else case (state)
                 ST_IDLE: begin
                     if (req) begin
-                        if (req_hit) begin
+                        if (req_hit && !cache_disable) begin
                             rdata <= cache_data[req_index][req_word_offset];
                             ready <= 1'b1;
                             // stays in ST_IDLE - a hit is just this
                             // one cycle of latency, nothing to track
-                        end else if (req_index_locked) begin
-                            // Miss, but this slot is locked to
-                            // different code - can't evict it. Fetch
-                            // just the requested word directly,
+                        end else if (req_locked_out || cache_disable) begin
+                            // Miss on a slot locked for different
+                            // code (which can't be evicted), or the
+                            // cache is disabled.
+                            // Either way, fetch just the requested
+                            // word directly,
                             // bypassing the cache entirely.
                             flash_addr_r <= addr;
                             flash_req_r  <= 1'b1;
@@ -180,6 +230,7 @@ module icache #(
                         end else begin
                             // Miss: start filling the whole line,
                             // starting at word 0 (offset bits cleared).
+                            valid[req_index]     <= 1'b0;  // until fully filled
                             fill_line_index      <= req_index;
                             fill_line_tag        <= req_tag;
                             fill_req_word_offset <= req_word_offset;
@@ -246,7 +297,7 @@ module icache #(
             hit_count  <= 32'd0;
             miss_count <= 32'd0;
         end else if (state == ST_IDLE && req) begin
-            if (req_hit)
+            if (req_hit && !cache_disable)
                 hit_count <= hit_count + 32'd1;
             else
                 miss_count <= miss_count + 32'd1;

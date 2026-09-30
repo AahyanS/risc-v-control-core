@@ -80,6 +80,8 @@ module cpu_pipeline_cache (
         .lock_cmd(1'b0),
         .lock_set(1'b0),
         .lock_addr(24'd0),
+        .cache_disable(1'b0),
+        .abort(1'b0),
         .hit_count(hit_count),
         .miss_count(miss_count),
         .stats_reset(stats_reset),

@@ -19,6 +19,15 @@
 // wins. Silently losing a real interrupt event to a same-cycle
 // acknowledgment race would be worse than occasionally requiring
 // software to notice pending is still set after clearing it.
+//
+// restart: pulsed when software writes a new compare value. Restarts
+// the count from 0 so the new period takes effect immediately.
+// Without it, shrinking the period while count is already past the
+// new compare value would let count run all the way to 2^32 before
+// the next match - about 171 s at 25 MHz. (Found while designing the
+// control-loop period sweep, which changes the period between
+// measurement windows.) pending is left alone: an event that already
+// happened is still real, and software acknowledges it as usual.
 
 module timer (
     input         clk,
@@ -26,6 +35,7 @@ module timer (
 
     input  [31:0] compare,
     input         clear_pending,
+    input         restart,
 
     output reg [31:0] count,
     output reg        pending
@@ -35,6 +45,10 @@ module timer (
         if (reset) begin
             count   <= 32'd0;
             pending <= 1'b0;
+        end else if (restart) begin
+            count   <= 32'd0;
+            if (clear_pending)
+                pending <= 1'b0;
         end else if (count == compare) begin
             count   <= 32'd0;
             pending <= 1'b1;
