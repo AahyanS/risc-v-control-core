@@ -1,6 +1,6 @@
 # Basys3 hardware bring-up
 
-Step-by-step path from an unopened board to the CPU driving the motor.
+Step-by-step path from an unopened board to the CPU controlling the motor.
 Each step proves one new thing, so when something fails you know which
 piece to look at.
 
@@ -38,8 +38,9 @@ piece to look at.
    on its own; the environment variable is what made it work. The
    license renews yearly.
 
-If builds hit odd "file locked" errors, OneDrive is syncing
-`fpga/build/` mid-build - pause OneDrive sync while building.
+If builds hit odd "file locked" errors and the repository is in a
+cloud-synced folder (OneDrive, Dropbox), the sync client is touching
+`fpga/build/` mid-build - pause syncing while building.
 
 ## 2. Bring-up test (no CPU yet)
 
@@ -73,7 +74,7 @@ the FPGA bitstream. One `.mcs` file holds both.
    ```
    Note the "Achievable frequency" printed at the end, and keep
    `fpga/build/core/timing_worst_20_paths.rpt` and `utilization.rpt` -
-   those are the real Fmax and resource numbers for PROJECT.md.
+   those are the real Fmax and resource numbers.
 2. Write the flash image and start the CPU:
    ```
    vivado -mode batch -source fpga/program_flash.tcl -tclargs fpga/build/core/basys3_flash.mcs fpga/build/core/basys3_top.bit
@@ -105,7 +106,7 @@ and reprogram the `.mcs`.
 The CPU has a UART transmitter (register `0xFFFFFF30`) wired to the
 Basys3's USB-UART bridge, so programs can print to the PC over the
 same micro-USB cable - no extra hardware. It shows up as a COM port
-(COM4 on this project's laptop; check Device Manager → Ports).
+(check Device Manager → Ports for its number; COM4 below is an example).
 Settings: **115200 baud, 8 data bits, no parity, 1 stop bit.**
 
 The cache-locking experiment runs this way:
@@ -219,6 +220,12 @@ If it doesn't count, the LED pattern says which part is missing:
   ground (green wire) connection or a connector not fully seated on
   the motor.
 
+**This project's encoder has a dead A channel** (the "only LD0
+flickers" case, confirmed on the encoder side), so the speed controller
+below counts channel B alone, with direction taken from the motor
+command. An encoder with both channels working counts as described
+above.
+
 ## 5. Motor test
 
 1. Rebuild the flash image with the motor program:
@@ -240,6 +247,25 @@ wires on J5). If it
 doesn't move at all while the motor spins, recheck the encoder power and
 A/B wiring. Flip SW15 down at any time to stop the motor.
 
+## 6. Closed-loop speed control
+
+1. Build and flash `sw/hw_speed_control.bin` as in step 3. It puts the
+   encoder in single-channel mode itself.
+2. Open the serial terminal (step 3b), then connect the motor supply and
+   flip SW15 up.
+
+**Expected:** the motor steps through 0, 20, 35, 10, -20 and 0 counts
+per 16 ms (20 is about 250 RPM at the output shaft), two seconds each,
+repeating; LD2-LD0 show the step. The terminal prints CSV:
+```
+ms,setpoint,speed,duty
+```
+every 10 ms - paste it into a spreadsheet to plot the step responses.
+In simulation against a motor model every step settles within 25-50 ms
+with at most 3 counts of overshoot. The gains (`sw/hw_speed_control.s`)
+were tuned for an assumed 15-30 ms motor time constant: a sluggish
+response means raising kp, oscillation means lowering it.
+
 ## What's verified before hardware
 
 `bash fpga/sim/run_board_sim.sh` simulates this exact design - MMCM,
@@ -247,6 +273,6 @@ reset, the STARTUPE2 flash path (including the three flash clocks that
 are lost after configuration), the CPU fetching from 3 MB into flash,
 the LEDs, the encoder, the motor safety chain, and the UART (decoded
 back into text and checked against the CPU's registers) - with all
-four hardware programs.
+five hardware programs.
 It also runs a negative control with the boot workaround removed, which
 fails, confirming the workaround is what makes booting work.

@@ -13,7 +13,7 @@
 #
 # Reports land next to the outputs. The core build also prints the
 # achievable clock frequency from the worst timing path, which answers
-# PROJECT.md's open question about whether the MAC multiplier limits
+# docs/DESIGN_LOG.md's open question about whether the MAC multiplier limits
 # the clock.
 
 set target  [lindex $argv 0]
@@ -30,9 +30,10 @@ if {$target eq "bringup"} {
     set top basys3_top
     foreach f {alu.v regfile.v control.v pc.v dmem.v spi_flash_ctrl.v
                icache.v quad_decoder.v pwm.v timer.v uart_tx.v motor_dir_guard.v
-               cpu_pipeline_cache_locked.v fpga/basys3_top.v} {
-        read_verilog [file join $root $f]
+               cpu_pipeline_cache_locked.v} {
+        read_verilog [file join $root rtl $f]
     }
+    read_verilog [file join $root fpga basys3_top.v]
     read_xdc [file join $root fpga basys3.xdc]
 } else {
     puts "usage: vivado -mode batch -source fpga/build.tcl -tclargs bringup"

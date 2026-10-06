@@ -13,15 +13,15 @@
 
 cd "$(dirname "$0")"
 
-CORE="alu.v regfile.v control.v pc.v"
+CORE="rtl/alu.v rtl/regfile.v rtl/control.v rtl/pc.v"
 declare -A SRC=(
-    [cpu]="$CORE imem.v dmem.v cpu.v"
-    [cpu_pipeline]="$CORE imem.v dmem.v cpu_pipeline.v"
-    [cpu_pipeline_xip]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v cpu_pipeline_xip.v"
-    [cpu_pipeline_cache]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v cpu_pipeline_cache.v"
-    [cpu_pipeline_cache_locked]="$CORE dmem.v spi_flash_ctrl.v spi_flash_model.v icache.v quad_decoder.v pwm.v timer.v uart_tx.v cpu_pipeline_cache_locked.v"
-    [spi_flash_ctrl]="spi_flash_ctrl.v spi_flash_model.v"
-    [icache]="icache.v spi_flash_ctrl.v spi_flash_model.v"
+    [cpu]="$CORE rtl/imem.v rtl/dmem.v rtl/cpu.v"
+    [cpu_pipeline]="$CORE rtl/imem.v rtl/dmem.v rtl/cpu_pipeline.v"
+    [cpu_pipeline_xip]="$CORE rtl/dmem.v rtl/spi_flash_ctrl.v tb/spi_flash_model.v rtl/cpu_pipeline_xip.v"
+    [cpu_pipeline_cache]="$CORE rtl/dmem.v rtl/spi_flash_ctrl.v tb/spi_flash_model.v rtl/icache.v rtl/cpu_pipeline_cache.v"
+    [cpu_pipeline_cache_locked]="$CORE rtl/dmem.v rtl/spi_flash_ctrl.v tb/spi_flash_model.v rtl/icache.v rtl/quad_decoder.v rtl/pwm.v rtl/timer.v rtl/uart_tx.v rtl/cpu_pipeline_cache_locked.v"
+    [spi_flash_ctrl]="rtl/spi_flash_ctrl.v tb/spi_flash_model.v"
+    [icache]="rtl/icache.v rtl/spi_flash_ctrl.v tb/spi_flash_model.v"
 )
 
 # Testbenches driven by their own scripts (they need +HEXFILE= etc.).
@@ -30,8 +30,9 @@ SKIP="tb_compliance.v tb_compliance_pipeline.v tb_cosim.v"
 total_fail=0
 bad=()
 
-for tb in tb_*.v; do
-    case " $SKIP " in *" $tb "*) continue ;; esac
+for tb in tb/tb_*.v; do
+    name=$(basename "$tb")
+    case " $SKIP " in *" $name "*) continue ;; esac
 
     # The design under test is the first known module the testbench
     # instantiates; unit testbenches fall back to <module>.v.
@@ -39,7 +40,7 @@ for tb in tb_*.v; do
     if [ -n "$top" ]; then
         src=${SRC[$top]}
     else
-        src="${tb#tb_}"
+        src="rtl/${name#tb_}"
     fi
 
     out=$(iverilog -o /tmp/run_all_sim $src "$tb" 2>&1 && vvp /tmp/run_all_sim 2>&1)
@@ -50,11 +51,11 @@ for tb in tb_*.v; do
     f=$(echo "$out" | grep -cE "^FAIL|error:|ERROR:")
 
     if [ $status -ne 0 ] || [ "$f" -ne 0 ] || [ "$p" -eq 0 ]; then
-        printf "%-45s %3d pass  %3d FAIL   <--\n" "$tb" "$p" "$f"
-        bad+=("$tb")
+        printf "%-45s %3d pass  %3d FAIL   <--\n" "$name" "$p" "$f"
+        bad+=("$name")
         total_fail=$((total_fail + (f > 0 ? f : 1)))
     else
-        printf "%-45s %3d pass\n" "$tb" "$p"
+        printf "%-45s %3d pass\n" "$name" "$p"
     fi
 done
 

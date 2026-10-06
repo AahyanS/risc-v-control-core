@@ -1,185 +1,156 @@
-# risc-v-control-core
+# RISC-V Real-Time Control Processor
 
-A RISC-V (RV32I) processor built from scratch in Verilog, designed around a
-specific argument: **for real-time control, average-case cache performance is
-the wrong metric.** A cache makes the common case fast; it does nothing about
-the worst case, and a worst-case latency spike is exactly what breaks a
-control loop's deadline. The fix isn't a bigger cache — it's making the hot
-path deterministic by locking it into the cache.
+A 5-stage pipelined RISC-V (RV32I) processor written from scratch in
+Verilog and run on a Xilinx Artix-7 FPGA, built to answer one question:
+**does cache locking matter for real-time control?**
 
-That argument is backed by measurement on real hardware. The same
-interrupt-driven PID control loop, running on the physical FPGA next to a
-background task, in three configurations of one chip — only a control
-register differs between them:
-
-| | worst-case response | max stable loop rate |
-|---|---|---|
-| no cache (execute from flash) | 3701 cycles | 4.7 kHz |
-| cache | 4231 cycles | 5.9 kHz |
-| cache + control loop locked | **65 cycles** | **100.4 kHz** |
-
-The unlocked cache is *worse* than no cache in the worst case: the
-background task evicts the control loop between ticks, so every tick
-refills it. Locking gives a 65x better worst case and a 17x faster loop.
-
-The underlying effect, isolated in a micro-benchmark:
-
-| | unlocked cache | locked cache |
-|---|---|---|
-| best case | 8 cycles | 10 cycles |
-| under identical competing memory traffic | 531 cycles (every time) | 10 cycles (every time) |
-
-Same hardware, same interference, only a lock bit differing — a 53x speedup
-and the jitter eliminated entirely, not just reduced. Measured first in
-simulation, then reproduced cycle-for-cycle on the physical FPGA, which
-reports its own results over USB serial:
-
-```
-run 9: unlocked 531-531 cycles, locked 10-10 cycles
-run 10: unlocked 531-531 cycles, locked 10-10 cycles
-```
-
-See
-[Results](#results) below for how this was measured, and [PROJECT.md](PROJECT.md)
-for the full build log.
-
-## Architecture
-
-- **Core**: 5-stage pipelined RV32I (IF/ID/EX/MEM/WB), in-order, single-issue
-  — deliberately. Out-of-order execution is the wrong answer for hard
-  real-time control, where determinism is the feature, not an omission.
-  Full data forwarding, load-use hazard detection, and a 2-bit
-  saturating-counter branch predictor.
-- **Memory hierarchy**: program executes in place (XIP) from external QSPI
-  flash rather than on-chip BRAM, behind a direct-mapped instruction cache
-  with **software-controlled cache-line locking** — the centerpiece of the
-  project. A lock reserves a line for one address, so code can be locked
-  before it has ever run; nothing else can evict it; the real cost is that any
-  other address aliasing to that line becomes permanently uncacheable while
-  the lock holds, which is the actual, unavoidable tradeoff locking buys
-  determinism with.
-- **Interrupts**: a minimal but real M-mode subset (`mstatus`, `mie`, `mip`,
-  `mtvec`, `mepc`, `mcause`; `CSRRW`/`CSRRS`/`MRET`) driven by a hardware
-  timer, so a periodic control loop has a real trigger and "missed deadline"
-  is a measurable event, not just a simulation artifact. An interrupt is
-  taken in any cycle and cancels the interrupted code's in-flight flash
-  read rather than waiting it out, with a rule that guarantees the
-  interrupted code still makes progress — which took locked-loop jitter
-  from 182 cycles to 4.
-- **Peripherals**: a quadrature encoder decoder (4x decoding, hardware
-  glitch rejection) and a PWM generator, both memory-mapped, both running
-  continuously off the clock regardless of what the CPU is doing at any
-  given moment — for the same reason the cache lock exists: correctness
-  that depends on CPU timing is not correctness a real-time system can rely
-  on.
-- **Custom instruction**: `mac rd, rs1, rs2` (`rd = rd + rs1*rs2`, Q16.16
-  fixed-point) in RISC-V's reserved custom-0 opcode space — a real hardware
-  multiplier for the one operation a PID loop actually repeats, since base
-  RV32I has no general multiply at all.
-- **Control software**: a fixed-point (Q16.16) PID controller with
-  integral anti-windup via conditional integration, written in C.
+A cache makes code fast *on average*. A control loop doesn't care about
+the average — it has to finish before the next tick, every tick, so one
+cache miss at the wrong moment is a missed deadline. This processor
+executes directly from slow SPI flash behind an instruction cache whose
+lines can be locked, so the control loop can be pinned in place and never
+evicted. On the real hardware, that makes the difference below.
 
 ## Results
 
-Every number below comes from an actual simulation run, not a calculation —
-the standing rule for this project was to verify empirically and debug real
-failures with signal traces, not fix things by reasoning about them in the
-abstract.
+The same interrupt-driven PID control loop, running on the FPGA next to a
+background task, in three configurations of one chip — only a control
+register differs between them:
 
-- **Cache locking eliminates jitter, not just reduces it.** Under identical
-  simulated bus contention (a second routine deliberately placed to alias to
-  the same cache slot, called between every timed invocation of the "hot"
-  routine), the unlocked cache misses on *every single call* (531 cycles,
-  uniformly) while the locked cache hits on *every single call* (10 cycles,
-  uniformly) — a 53x speedup and zero variance, from the same interference,
-  with only a lock bit differing. The same experiment on the physical
-  Basys3, fetching from its real flash chip (`sw/hw_cache_lock.s`),
-  prints identical numbers.
-- **The branch predictor already sits at its ceiling.** On a representative
-  control-loop shape (one tight backward branch, 1000 iterations), the 2-bit
-  predictor achieves 99.8% accuracy — exactly 2 mispredictions (one
-  cold-start, one unavoidable loop exit), matching a hand-derived prediction
-  made *before* running anything. Decision: a fancier predictor (gshare) is
-  deliberately not built, because there's nothing left for one to improve on
-  for this workload — documented restraint backed by data.
-- **The custom MAC instruction is ~21x faster** than the software multiply
-  path (1585 vs. 33343 cycles for the same `Kp*error + Ki*integral +
-  Kd*derivative` computation) — though precisely: this system is fetch-bound
-  (XIP from flash), so the win comes from collapsing an entire software
-  multiply routine into one instruction to fetch, not from faster per-cycle
-  computation.
-- **Anti-windup measurably prevents the failure mode it exists for.** Racing
-  the real PID controller against a deliberately naive variant (no
-  anti-windup guard) through the same saturating scenario: the guarded
-  integral settles 32x smaller, and setpoint overshoot drops from 42% to
-  1.3%.
-- **Passes the official RV32I architectural compliance suite** (40/40,
-  `riscv-tests`) on both the single-cycle and pipelined cores, cross-checked
-  against an independently written Python ISA simulator via differential
-  co-simulation.
+| Configuration | Worst-case response | Max stable loop rate |
+|---|---|---|
+| No cache (every fetch from flash) | 3,701 cycles | 4.7 kHz |
+| Cache | 4,231 cycles | 5.9 kHz |
+| Cache, control loop locked | **65 cycles** | **100.4 kHz** |
 
-## Verification approach
+- **Locking cuts the worst case 65x and runs the loop 17x faster.**
+- **An unlocked cache is *worse* than no cache.** The background task is
+  bigger than the cache, so it evicts the control loop between ticks; every
+  tick then misses on every line and refills whole 4-word lines, including
+  words the loop never executes. The cache's average-case benefit vanishes
+  exactly where a control loop needs it.
+- **Locking has a cost**, and it's measured too: other code mapping to the
+  locked lines can no longer be cached, so the background task completes
+  24% less work.
 
-Every module has its own dedicated testbench exercising real edge cases, not
-just the happy path. Beyond that:
+Max stable rate is the shortest timer period with zero missed deadlines,
+found by binary search on the board. Every number here was measured on the
+FPGA and printed over USB serial by the processor itself; the board output
+is identical round after round:
 
-1. The official `riscv-tests` architectural compliance suite — a
-   categorically stronger claim than "my own tests pass."
-2. Differential co-simulation against an independently written reference ISA
-   simulator, comparing architectural state at every retired instruction.
-3. End-to-end tests that drive real signal-level transitions on physical
-   pins (encoder A/B channels, PWM output) and confirm software reads back
-   what hardware actually did, not just what the source code says it should
-   do.
-4. Every claimed result above is measured through the hardware's own
-   instrumentation (a free-running cycle counter and cache hit/miss
-   counters, both memory-mapped), not computed by hand.
+```
+no cache: response min 3701 mean 3701 max 3701 cycles, max rate 4698 Hz (period 5321), background 1062
+cache: response min 4229 mean 4229 max 4231 cycles, max rate 5886 Hz (period 4247), background 1921
+locked: response min 61 mean 61 max 65 cycles, max rate 100401 Hz (period 249), background 1459
+```
 
-Several real bugs were found this way rather than through inspection —
-notably a same-cycle race between a cache-lock command and a conflicting
-miss, and a subtler one where a pipeline-inserted bubble (bit-identical to a
-real `addi x0,x0,0`) could be mistaken for a valid interrupt trap point.
-Both are documented in [PROJECT.md](PROJECT.md) with how they were traced and
-fixed.
+The underlying effect in isolation — a small routine timed while a second
+routine mapped to the same cache line runs between calls: **531 cycles
+unlocked, 10 locked, on every call**, identical in simulation and on the
+board.
 
-## Status
+### Other measured results
 
-Phases 0 through 4 (base ISA, pipeline, memory hierarchy, cache locking,
-control application — PID, peripherals, interrupts, the custom instruction)
-are complete and verified in simulation. Phase 5 (a Digilent Basys3, a
-Pmod DHB1 H-bridge, and an encoder-equipped gearmotor) is underway. **The
-CPU runs on the physical board**, standalone: the FPGA configures itself
-from its onboard flash and the CPU executes in place from the same chip,
-through Xilinx's `STARTUPE2` primitive. On the XC7A35T it uses 20% of the
-logic and meets timing up to about 53-57 MHz; the custom MAC instruction
-is the critical path. A UART transmitter lets programs print their
-measurements to a PC, and every result above was measured on the board.
-Next is closing the loop on the real motor.
-[fpga/README.md](fpga/README.md) is the bench procedure. See
-[PROJECT.md](PROJECT.md) for the full checklist and design log.
+- **Interrupt latency jitter: 182 → 4 cycles.** Locking made the handler
+  deterministic, but not *when it started*: interrupts waited for the
+  interrupted code's in-flight flash read (traced: entry took 4–180 cycles
+  depending on where in that read the tick landed). Interrupts are now
+  taken in any cycle and abort the read, with a forward-progress rule so
+  the interrupted code can never be starved. Locked response went from
+  137–319 cycles to 61–65.
+- **Custom multiply-accumulate instruction: 21x faster** PID math than the
+  software multiply routine (1,585 vs. 33,343 cycles), in RISC-V's reserved
+  custom-0 opcode space.
+- **Branch prediction: 99.8% accurate** with a 2-bit counter on the control
+  loop — matching a prediction made before running it, so a more complex
+  predictor was deliberately not built.
+- **Anti-windup:** overshoot drops from 42% to 1.3% against an otherwise
+  identical PID without it.
+- **Closed-loop motor speed control** with a single-channel encoder
+  settles within 25–50 ms with at most 3 counts of overshoot, including a
+  reversal, against a DC motor model driven by the real H-bridge pins in
+  the board-level simulation.
+- **FPGA cost:** 21% of the XC7A35T's LUTs, 4 DSP slices, no block RAM;
+  meets timing up to 56 MHz (run at 25 MHz). The MAC instruction's
+  multipliers are the critical path.
+
+## Architecture
+
+- **Pipeline:** IF / ID / EX / MEM / WB, in-order and single-issue by
+  design — for hard real-time control, predictability is the feature.
+  Full data forwarding, load-use hazard detection, 2-bit branch
+  prediction. A single-cycle version of the core is kept as a reference.
+- **Execute-in-place from SPI flash:** the program is fetched directly
+  from the board's own configuration flash (stored above the FPGA
+  bitstream), the way microcontrollers like the RP2040 and ESP32 run. A
+  word costs 131 cycles from flash against 1 from cache. The flash's clock
+  pin is reachable only through Xilinx's `STARTUPE2` primitive, which
+  swallows its first three clocks after configuration; the boot sequence
+  compensates.
+- **Instruction cache:** direct-mapped, 16 lines x 16 bytes. A
+  memory-mapped lock reserves a line for one address — that code fills it
+  on first use and nothing else can evict it. A control bit disables the
+  cache entirely, which is how all three configurations run on one
+  bitstream.
+- **Interrupts:** machine-mode timer interrupts (`mstatus`, `mie`,
+  `mtvec`, `mepc`, `mcause`, `mret`), taken in any cycle, with the
+  in-flight flash read aborted.
+- **Peripherals (memory-mapped):** quadrature encoder decoder with a
+  single-channel mode, PWM generator, periodic timer, UART transmitter,
+  cycle and cache-hit counters, and a hardware guard that enforces the
+  H-bridge's disable-before-reversing rule regardless of software.
+- **Software:** fixed-point (Q16.16) PID with anti-windup in C, and an
+  assembly version using the MAC instruction, small enough to lock into
+  the cache.
+
+## Verification
+
+- The official RISC-V compliance suite (`riscv-tests`): **40/40** on both
+  the single-cycle and pipelined cores.
+- Differential co-simulation against an independent Python instruction-set
+  simulator, comparing processor state after every instruction.
+- 49 testbenches, including stress tests that land interrupts at every
+  pipeline phase and check invariants every cycle — nothing executes
+  between a trap and its handler, and every instruction matches flash at
+  its address.
+- Mutation testing: each bug fix is removed again to confirm the test that
+  motivated it fails without it.
+- A board-level simulation of the complete FPGA design — clocking, flash
+  boot, peripherals, and a motor model — before anything runs on hardware.
+
+Bugs found along the way include an instruction labeled with the wrong
+address after an interrupt (causing an interrupt storm), a livelock where
+interrupts starved slow code forever, a half-filled cache line left marked
+valid after an aborted fill, and a data memory that synthesized into
+65,536 flip-flops — more than the FPGA has. Each one, and how it was
+traced, is in the [design log](docs/DESIGN_LOG.md).
+
+## Hardware
+
+- Digilent Basys3 (Xilinx Artix-7 XC7A35T)
+- Digilent Pmod DHB1 H-bridge
+- Pololu 50:1 micro metal gearmotor with encoder
 
 ## Repository layout
 
-- Core: `cpu.v` (single-cycle reference), `cpu_pipeline*.v` (the three
-  cache-configuration experiment cores), `alu.v`, `regfile.v`, `control.v`,
-  `pc.v`
-- Memory hierarchy: `spi_flash_ctrl.v`, `icache.v`, `imem.v`, `dmem.v`
-- Peripherals: `quad_decoder.v`, `pwm.v`, `timer.v`, `motor_dir_guard.v`,
-  `uart_tx.v`
-- Board: `fpga/` — Basys3 top level, pin constraints, Vivado build
-  script, board-level simulation, and the bring-up procedure
-- Software: `sw/` — PID controller (`pid.c`/`pid.h`), test/benchmark
-  programs, compliance harness
-- Verification: `tb_*.v` (per-module and integration testbenches),
-  `cosim/` (differential simulation against the Python reference ISS),
-  `compliance/` (vendored `riscv-tests` + harness), `run_compliance.sh`
+| Path | Contents |
+|---|---|
+| `rtl/` | The processor: pipelined and single-cycle cores, cache, SPI flash controller, peripherals |
+| `tb/` | Testbenches and the SPI flash simulation model |
+| `sw/` | Programs: PID controller, benchmarks, hardware experiments (`hw_*.s`) |
+| `fpga/` | Basys3 top level, pin constraints, Vivado build and programming scripts, board-level simulation |
+| `cosim/` | Reference instruction-set simulator and trace comparison |
+| `compliance/` | Vendored `riscv-tests` |
+| `docs/DESIGN_LOG.md` | Every design decision, measurement and bug, in the order the project was built |
 
-Every module builds and runs standalone with Icarus Verilog:
+## Running it
+
+Requires [Icarus Verilog](https://steveicarus.github.io/iverilog/) and the
+xPack RISC-V GCC toolchain.
 
 ```
-iverilog -o sim_<module> <module>.v tb_<module>.v
-vvp sim_<module>
+bash run_all_tests.sh        # every testbench, both compliance suites, board simulation
 ```
 
-`PROJECT.md` has the full build order, every design decision and why it was
-made, and every bug found along the way.
+Building for the FPGA requires Vivado; see [fpga/README.md](fpga/README.md)
+for the build, flash programming, wiring, and serial output.

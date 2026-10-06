@@ -26,3 +26,6 @@ vivado*.log
 vivado*.str
 usage_statistics_webtalk.*
 clockInfo.txt
+
+# Local editor/assistant settings
+.claude/

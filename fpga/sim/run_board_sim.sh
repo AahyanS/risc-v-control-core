@@ -7,10 +7,11 @@
 
 cd "$(dirname "$0")/../.."
 
-SRC="alu.v regfile.v control.v pc.v dmem.v spi_flash_ctrl.v spi_flash_model.v \
-     icache.v quad_decoder.v pwm.v timer.v uart_tx.v motor_dir_guard.v \
-     cpu_pipeline_cache_locked.v fpga/basys3_top.v fpga/sim/xilinx_stubs.v \
-     fpga/sim/tb_basys3_top.v"
+R=rtl
+SRC="$R/alu.v $R/regfile.v $R/control.v $R/pc.v $R/dmem.v $R/spi_flash_ctrl.v \
+     $R/icache.v $R/quad_decoder.v $R/pwm.v $R/timer.v $R/uart_tx.v $R/motor_dir_guard.v \
+     $R/cpu_pipeline_cache_locked.v tb/spi_flash_model.v fpga/basys3_top.v \
+     fpga/sim/xilinx_stubs.v fpga/sim/tb_basys3_top.v"
 
 echo "=== hw_hello (boot from flash, heartbeat, encoder on LEDs) ==="
 iverilog -o sim_board_hello $SRC && vvp sim_board_hello | grep -vE '^VCD|finish'

@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./run_compliance.sh            # single-cycle core (cpu.v)
-#   ./run_compliance.sh pipeline   # pipelined core (cpu_pipeline.v)
+#   ./run_compliance.sh pipeline   # pipelined core (rtl/cpu_pipeline.v)
 # (run from the repo root - relative paths assume that)
 
 set -u
@@ -18,13 +18,13 @@ OBJCOPY="$TOOLCHAIN/riscv-none-elf-objcopy.exe"
 TESTS="add addi and andi auipc beq bge bgeu blt bltu bne jal jalr lb lbu lh lhu lui lw or ori sb sh simple sll slli slt slti sltiu sltu sra srai srl srli sub sw xor xori ld_st st_ld"
 
 if [ "${1:-}" = "pipeline" ]; then
-    CORE_FILE="cpu_pipeline.v"
-    TB_FILE="tb_compliance_pipeline.v"
+    CORE_FILE="rtl/cpu_pipeline.v"
+    TB_FILE="tb/tb_compliance_pipeline.v"
     SIM_NAME="sim_compliance_pipeline"
     echo "Target: pipelined core (cpu_pipeline.v)"
 else
-    CORE_FILE="cpu.v"
-    TB_FILE="tb_compliance.v"
+    CORE_FILE="rtl/cpu.v"
+    TB_FILE="tb/tb_compliance.v"
     SIM_NAME="sim_compliance"
     echo "Target: single-cycle core (cpu.v)"
 fi
@@ -32,7 +32,7 @@ fi
 mkdir -p build_compliance
 
 echo "Compiling testbench..."
-iverilog -o "$SIM_NAME" alu.v regfile.v control.v pc.v imem.v dmem.v "$CORE_FILE" "$TB_FILE"
+iverilog -o "$SIM_NAME" rtl/alu.v rtl/regfile.v rtl/control.v rtl/pc.v rtl/imem.v rtl/dmem.v "$CORE_FILE" "$TB_FILE"
 if [ $? -ne 0 ]; then
     echo "Testbench compilation failed."
     exit 1

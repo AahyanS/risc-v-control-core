@@ -1,7 +1,7 @@
 # predictor_measurement.s
 # A synthetic but representative "control loop" shape: one tight
 # backward branch, executed many times - exactly the pattern
-# PROJECT.md's branch predictor plan is built around measuring, not
+# docs/DESIGN_LOG.md's branch predictor plan is built around measuring, not
 # assuming. 1000 iterations: the branch is taken 999 times and
 # not-taken exactly once (the loop exit).
 #
