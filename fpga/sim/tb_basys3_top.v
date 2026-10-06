@@ -15,6 +15,9 @@
 // With -DCONTROL_LOOP: runs sw/hw_control_loop (the three-configuration
 // control-loop measurement) and checks properties of its report that
 // must hold whatever the exact numbers turn out to be.
+// With -DSPEED_CONTROL: runs sw/hw_speed_control against a simulated DC
+// motor driven by the real H-bridge pins (single-channel encoder, A
+// stuck) and checks that the speed settles on every setpoint.
 // With -DCACHE_LOCK: runs sw/hw_cache_lock (the locked-vs-unlocked
 // interference experiment), decodes the UART pin back into text the
 // way the PC will, and checks the printed numbers against the CPU's
@@ -135,6 +138,7 @@ module tb_basys3_top;
     reg  [8*160-1:0] cur_line  = 0;
     reg  [8*160-1:0] last_line = 0;
     reg  [8*160-1:0] line_buf [0:7];   // first 8 lines, for multi-line reports
+    event            line_done;
     integer          lines_rx = 0;
     integer          framing_errors = 0;
     integer          ub;
@@ -153,6 +157,7 @@ module tb_basys3_top;
         if (ch == 8'd10) begin
             last_line = cur_line;
             if (lines_rx < 8) line_buf[lines_rx] = cur_line;
+            -> line_done;
             cur_line  = 0;
             lines_rx  = lines_rx + 1;
         end else if (ch != 8'd13) begin
@@ -170,11 +175,74 @@ module tb_basys3_top;
     integer v_min, v_mean, v_max, v_hz, v_per, v_bg;
     reg [8*160-1:0] tmp_line;
 
+`ifdef SPEED_CONTROL
+    // ---- DC motor model, driven by the real H-bridge pins ----
+    // Speed follows the average drive (+1 forward, -1 reverse, 0 when
+    // EN is low - PWM averages out through the lag) with a first-order
+    // time constant; position integrates speed; every whole count the
+    // shaft turns toggles encoder B. A is held stuck, like this
+    // project's encoder. Scaled to the simulation's 2000-cycle tick:
+    // full speed 50 counts per 16 ticks, time constant 30 ticks.
+    localparam real VMAX = 50.0 / (16.0 * 2000.0);   // counts per cycle
+    localparam real TAU  = 30.0 * 2000.0;            // cycles
+    real    m_v = 0.0, m_pos = 0.0, m_drive;
+    integer m_count = 0, m_new;
+
+    always @(posedge uut.sys_clk) begin
+        m_drive = dhb1_en1 ? (dhb1_dir1 ? -1.0 : 1.0) : 0.0;
+        m_v     = m_v + (m_drive * VMAX - m_v) / TAU;
+        m_pos   = m_pos + m_v;
+        m_new   = $rtoi(m_pos + 1000000.0) - 1000000;   // floor, for either sign
+        if (m_new != m_count) begin
+            m_count = m_new;
+            enc_b   = ~enc_b;
+        end
+    end
+
+    // ---- Log checker: parse each "ms,setpoint,speed,duty" line ----
+    // Segments are 150 ticks. In the last 40 ticks of each segment the
+    // speed must be within 2 counts of the setpoint (settled); also
+    // track the largest overshoot past each nonzero setpoint.
+    integer l_ms = 0, l_sp, l_v, l_u, l_parsed;
+    integer log_lines = 0, settled_checked = 0, settled_bad = 0;
+    integer max_over = 0, min_rev = 0, saturated = 0;
+    integer cur_sp = 0, prev_sp = 0;
+    reg [5:0] seg_settled = 6'b0;     // a settled-window sample seen, per segment
+    always @(line_done) begin
+        tmp_line = last_line;
+        l_parsed = $sscanf(tmp_line, "%d,%d,%d,%d", l_ms, l_sp, l_v, l_u);
+        if (l_parsed == 4) begin
+            log_lines = log_lines + 1;
+            if ($test$plusargs("showlog")) $display("LOG %0s", tmp_line);
+            if (l_ms % 150 >= 110) begin
+                settled_checked = settled_checked + 1;
+                seg_settled[(l_ms / 150) % 6] = 1'b1;
+                if (l_v - l_sp > 2 || l_sp - l_v > 2) begin
+                    settled_bad = settled_bad + 1;
+                    if (settled_bad <= 5)
+                        $display("NOT SETTLED: ms=%0d setpoint=%0d speed=%0d duty=%0d", l_ms, l_sp, l_v, l_u);
+                end
+            end
+            // Overshoot: past the new setpoint, in the direction of the
+            // step from the previous one.
+            if (l_sp != cur_sp) begin prev_sp = cur_sp; cur_sp = l_sp; end
+            if (l_sp > prev_sp && l_v - l_sp > max_over) max_over = l_v - l_sp;
+            if (l_sp < prev_sp && l_sp - l_v > max_over) max_over = l_sp - l_v;
+            if (l_v < min_rev) min_rev = l_v;
+            if (l_u >= 1023 || l_u <= -1023) saturated = saturated + 1;
+        end
+    end
+`endif
+
     initial begin
 `ifdef CACHE_LOCK
         $readmemh("sw/hw_cache_lock_sim.hex", flash.mem);
 `elsif CONTROL_LOOP
         $readmemh("sw/hw_control_loop_sim.hex", flash.mem);
+`elsif SPEED_CONTROL
+        $readmemh("sw/hw_speed_control_sim.hex", flash.mem);
+        enc_a = 1'b1;           // channel A is dead: stuck
+        sw15  = 1'b1;           // armed from the start
 `elsif MOTOR_TEST
         $readmemh("sw/hw_motor_test_sim.hex", flash.mem);
 `else
@@ -264,6 +332,21 @@ module tb_basys3_top;
         // phase - where in the two-cycle fetch cadence and the abort
         // handshake the tick lands.
         check(r_max[2] - r_min[2] <= 8, "LOCKED_JITTER_AT_MOST_8_CYCLES");
+`elsif SPEED_CONTROL
+        // ---- One full setpoint cycle: 6 segments x 150 ticks. Logging
+        // runs behind the tick rate in simulation (a line takes ~25
+        // ticks to print), so wait on the logged time, not a line count.
+        for (i = 0; i < 4000000 && l_ms < 900; i = i + 1) @(negedge clk);
+        $display("%0d log lines; settled-window samples %0d, off by more than 2 counts: %0d",
+                 log_lines, settled_checked, settled_bad);
+        $display("largest overshoot past a new setpoint: %0d counts; lowest speed %0d; saturated samples %0d",
+                 max_over, min_rev, saturated);
+        check(framing_errors == 0,              "UART_FRAMES_VALID");
+        check(l_ms >= 900,                      "LOG_COVERS_ALL_6_SEGMENTS");
+        check(seg_settled == 6'b111111 && settled_bad == 0, "SPEED_SETTLES_WITHIN_2_COUNTS_EVERY_SEGMENT");
+        check(min_rev <= -18,                   "MOTOR_REVERSES_FOR_NEGATIVE_SETPOINT");
+        check(max_over <= 8,                    "OVERSHOOT_AT_MOST_8_COUNTS");
+        check(dir_violations == 0,              "DIR_NEVER_CHANGED_WITH_EN_HIGH");
 `elsif MOTOR_TEST
         // ---- Arm switch down: motor must never be enabled ----
         sw15 = 0;

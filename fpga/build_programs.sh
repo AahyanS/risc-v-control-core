@@ -34,6 +34,10 @@ build hw_cache_lock "-Wa,--defsym,DELAY=50"
 # Sim: 8-tick windows and a coarser search, so the board simulation
 # finishes in minutes; hardware uses 256 ticks and ~1.6% resolution.
 build hw_control_loop "-Wa,--defsym,WINDOW_SHIFT=3 -Wa,--defsym,SEARCH_SHIFT=4"
+# Sim: 2000-cycle ticks (the board sim's motor model is scaled to match),
+# 150-tick segments, and a log line every 10 ticks - printing isn't
+# scaled down with the tick, so it can't keep up with the hardware rate.
+build hw_speed_control "-Wa,--defsym,TICK=2000 -Wa,--defsym,SEG_TICKS=150 -Wa,--defsym,LOG_EVERY=10"
 
 # hw_cache_lock's timed code must not share hot_loop's cache line
 # index (see the header of sw/hw_cache_lock.s): measure has to end by

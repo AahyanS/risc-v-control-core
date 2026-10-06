@@ -75,8 +75,8 @@ echo
 echo "=== Board-level simulation ==="
 board=$(bash fpga/sim/run_board_sim.sh 2>&1)
 echo "$board" | grep -E "^===|ALL CHECKS|CHECK\(S\) FAILED"
-# Expected: four passing runs, then the negative control failing.
-if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 4 ] || \
+# Expected: five passing runs, then the negative control failing.
+if [ "$(echo "$board" | grep -c "ALL CHECKS PASSED")" -ne 5 ] || \
    [ "$(echo "$board" | grep -c "CHECK(S) FAILED")" -ne 1 ]; then
     bad+=("board sim")
     total_fail=$((total_fail + 1))

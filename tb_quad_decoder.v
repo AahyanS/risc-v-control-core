@@ -4,6 +4,8 @@
 // direction reversal mid-stream, an idle period, and a deliberately
 // illegal double transition - and checks position/error_count against
 // hand-computed expected values at each stage.
+// Then the single-channel mode (B edges, sign from dir) the project
+// uses since its encoder lost channel A.
 //
 // Run with:
 //   iverilog -o sim_quad quad_decoder.v tb_quad_decoder.v
@@ -15,6 +17,7 @@ module tb_quad_decoder;
 
     reg clk, reset;
     reg a, b;
+    reg single = 1'b0, dir = 1'b0;
     wire signed [31:0] position;
     wire [31:0] error_count;
 
@@ -24,6 +27,8 @@ module tb_quad_decoder;
         .a(a),
         .b(b),
         .clear_position(1'b0),
+        .single_channel(single),
+        .dir(dir),
         .position(position),
         .error_count(error_count)
     );
@@ -59,7 +64,7 @@ module tb_quad_decoder;
         end
     endtask
 
-    task check_position(input signed [31:0] expected, input [63:0] label);
+    task check_position(input signed [31:0] expected, input [8*40-1:0] label);
         begin
             if (position !== expected)
                 $display("FAIL [%0s]: position=%0d expected=%0d", label, position, expected);
@@ -68,7 +73,7 @@ module tb_quad_decoder;
         end
     endtask
 
-    task check_errors(input [31:0] expected, input [63:0] label);
+    task check_errors(input [31:0] expected, input [8*40-1:0] label);
         begin
             if (error_count !== expected)
                 $display("FAIL [%0s]: error_count=%0d expected=%0d", label, error_count, expected);
@@ -144,6 +149,34 @@ module tb_quad_decoder;
         a = 1; b = 1; settle;
         check_position(4, "INVERTED_CHANNELS_KEEP_DIRECTION");
         check_errors(0, "INVERTED_CHANNELS_NO_ERRORS");
+
+        // ---- Single-channel mode: B edges only, sign from dir ----
+        // Position is 4 here. A is held stuck, as on this project's
+        // encoder.
+        single = 1'b1;
+        a = 1; b = 1; settle;
+        b = 0; settle;  b = 1; settle;  b = 0; settle;  b = 1; settle;
+        check_position(8, "SINGLE_FWD_EACH_B_EDGE_PLUS_1");
+        dir = 1'b1;
+        b = 0; settle;  b = 1; settle;  b = 0; settle;
+        check_position(5, "SINGLE_DIR1_EACH_B_EDGE_MINUS_1");
+        // A toggling alone must be ignored (it's the dead channel - any
+        // noise on it must not count), and no errors are logged.
+        a = 0; settle;  a = 1; settle;  a = 0; settle;
+        check_position(5, "SINGLE_IGNORES_A");
+        // A and B changing in the same cycle: an illegal jump in
+        // quadrature mode, just one B edge here.
+        dir = 1'b0;
+        a = 1; b = 1; settle;
+        check_position(6, "SINGLE_AB_TOGETHER_IS_ONE_B_EDGE");
+        check_errors(0, "SINGLE_LOGS_NO_ERRORS");
+        // Back to quadrature: normal decoding resumes from the current
+        // pin state (11), no false count or error from the mode switch.
+        single = 1'b0;
+        settle;
+        a = 1; b = 0; settle;         // 11 -> 10: forward in quadrature
+        check_position(7, "BACK_TO_QUADRATURE_DECODES");
+        check_errors(0, "MODE_SWITCH_NO_FALSE_ERROR");
 
         $display("Testbench complete.");
         $finish;

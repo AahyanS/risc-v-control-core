@@ -88,6 +88,7 @@ module cpu_pipeline_cache_locked #(
     wire signed [31:0] enc_position;
     wire        [31:0] enc_error_count;
     wire               enc_position_clear;   // driven from the MEM stage below
+    reg                enc_single_channel;   // 0xFFFFFF38 bit 0, written from MEM below
 
     quad_decoder quad_decoder_inst (
         .clk(clk),
@@ -95,6 +96,8 @@ module cpu_pipeline_cache_locked #(
         .a(enc_a),
         .b(enc_b),
         .clear_position(enc_position_clear),
+        .single_channel(enc_single_channel),
+        .dir(motor_dir),
         .position(enc_position),
         .error_count(enc_error_count)
     );
@@ -752,6 +755,10 @@ module cpu_pipeline_cache_locked #(
     //                sends every fetch straight to flash: Configuration
     //                1 (no cache) at runtime, for the three-way
     //                comparison. Resets to 0 (cache on).
+    //   0xFFFFFF38 - encoder mode, bit 0 = single-channel (read/write):
+    //                count B edges only, sign from the motor-direction
+    //                register (see quad_decoder.v). Resets to 0
+    //                (quadrature).
     // A store to either counter address resets BOTH hit and miss
     // together, since they're only meaningful as a pair.
 
@@ -765,6 +772,7 @@ module cpu_pipeline_cache_locked #(
     localparam [31:0] MMIO_MOTOR_DIR_ADDR    = 32'hFFFFFF2C;
     localparam [31:0] MMIO_UART_ADDR         = 32'hFFFFFF30;
     localparam [31:0] MMIO_CACHE_CTRL_ADDR   = 32'hFFFFFF34;
+    localparam [31:0] MMIO_ENC_MODE_ADDR     = 32'hFFFFFF38;
 
     wire is_mmio_lock_write    = ex_mem_mem_write && (ex_mem_alu_result == MMIO_LOCK_ADDR);
     wire is_mmio_cycle_addr    = (ex_mem_alu_result == MMIO_CYCLE_ADDR);
@@ -780,13 +788,15 @@ module cpu_pipeline_cache_locked #(
     wire is_mmio_motor_dir     = (ex_mem_alu_result == MMIO_MOTOR_DIR_ADDR);
     wire is_mmio_uart          = (ex_mem_alu_result == MMIO_UART_ADDR);
     wire is_mmio_cache_ctrl    = (ex_mem_alu_result == MMIO_CACHE_CTRL_ADDR);
+    wire is_mmio_enc_mode      = (ex_mem_alu_result == MMIO_ENC_MODE_ADDR);
     wire is_mmio_addr          = is_mmio_lock_write || is_mmio_cycle_addr ||
                                   is_mmio_hit_addr || is_mmio_miss_addr ||
                                   is_mmio_enc_pos_addr || is_mmio_enc_err_addr ||
                                   is_mmio_pwm_addr || is_mmio_timer_cmp ||
                                   is_mmio_timer_ack || is_mmio_timer_count ||
                                   is_mmio_led || is_mmio_motor_dir ||
-                                  is_mmio_uart || is_mmio_cache_ctrl;
+                                  is_mmio_uart || is_mmio_cache_ctrl ||
+                                  is_mmio_enc_mode;
 
     wire dmem_write_en = ex_mem_mem_write && !is_mmio_addr;
 
@@ -824,10 +834,12 @@ module cpu_pipeline_cache_locked #(
             led           <= 16'd0;
             motor_dir     <= 1'b0;
             cache_disable <= 1'b0;
+            enc_single_channel <= 1'b0;
         end else if (ex_mem_mem_write) begin
             if (is_mmio_led)        led           <= ex_mem_rs2_data[15:0];
             if (is_mmio_motor_dir)  motor_dir     <= ex_mem_rs2_data[0];
             if (is_mmio_cache_ctrl) cache_disable <= ex_mem_rs2_data[0];
+            if (is_mmio_enc_mode)   enc_single_channel <= ex_mem_rs2_data[0];
         end
     end
 
@@ -869,6 +881,7 @@ module cpu_pipeline_cache_locked #(
         is_mmio_motor_dir     ? {31'd0, motor_dir} :
         is_mmio_uart          ? {31'd0, uart_busy} :
         is_mmio_cache_ctrl    ? {31'd0, cache_disable} :
+        is_mmio_enc_mode      ? {31'd0, enc_single_channel} :
                                 mem_dmem_read_data;
 
     dmem dmem_inst (

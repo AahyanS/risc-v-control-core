@@ -18,6 +18,21 @@
 // them directly risks metastability. Passed through a 2-flop
 // synchronizer before use, standard practice for any signal crossing
 // into this clock domain from outside the chip.
+//
+// ---- Single-channel mode ----
+// With single_channel high, only B is used: every B edge (rising or
+// falling) counts one step, +1 when dir is 0 and -1 when dir is 1. The
+// encoder can't say which way the shaft turns with one channel, so the
+// direction comes from what the motor is being driven to do (the CPU's
+// motor-direction register) - the standard approach for single-channel
+// "tachometer" encoders. Exists because this project's encoder lost its
+// A output (J7 pin 1 proved good by grounding it; the encoder side
+// never switched). Costs: half the resolution of 4x quadrature (2
+// counts per B cycle instead of 4), and a shaft coasting backward just
+// after a direction change is counted the wrong way - negligible for
+// speed control through a 50:1 gearbox, a real limit for position
+// control. error_count is not updated in this mode (there are no
+// illegal transitions with one channel).
 
 module quad_decoder (
     input  clk,
@@ -35,6 +50,10 @@ module quad_decoder (
     // decoding restarted from an assumed 00 that might not match
     // reality.
     input  clear_position,
+
+    // Single-channel mode (see header): count B edges, sign from dir.
+    input  single_channel,
+    input  dir,
 
     output reg signed [31:0] position,
     output reg [31:0]        error_count   // counts invalid (double) transitions - diagnostic only
@@ -76,6 +95,12 @@ module quad_decoder (
             prev_state <= curr_state;
             settle     <= settle - 2'd1;
             if (clear_position) position <= 32'sd0;
+        end else if (single_channel) begin
+            prev_state <= curr_state;
+            if (clear_position)
+                position <= 32'sd0;
+            else if (curr_state[0] != prev_state[0])        // a B edge
+                position <= dir ? position - 32'sd1 : position + 32'sd1;
         end else begin
             prev_state <= curr_state;
 
